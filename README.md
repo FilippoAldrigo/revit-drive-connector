@@ -4,7 +4,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011%20x64-0078D6.svg)](https://www.microsoft.com/windows)
 [![Framework](https://img.shields.io/badge/.NET-10.0%20%2F%208.0%20WPF-512BD4.svg)](https://dotnet.microsoft.com/)
 [![Language](https://img.shields.io/badge/Language-English%20%7C%20Italiano-informational.svg)]()
-[![License: Proprietary](https://img.shields.io/badge/License-Proprietary%20%7C%20All%20Rights%20Reserved-red.svg)](LICENSE)
+[![License: Proprietary Free-to-Use](https://img.shields.io/badge/License-Proprietary%20%7C%20Free%20to%20Use-success.svg)](LICENSE)
 [![Google Drive](https://img.shields.io/badge/Cloud-Google%20Drive%20v3-4285F4.svg)](https://www.google.com/drive/)
 
 **Google Drive Connector** is a **Cloud Worksharing and Multi-User Collaboration solution for Autodesk Revit (versions 2025, 2026, and 2027)** powered by Google Drive.
@@ -132,5 +132,5 @@ The solution is engineered in **.NET 10 / .NET 8 (C#)** with a high-performance 
 
 ## License & Disclaimers
 
-* **License:** Copyright (c) 2026 Filippo Aldrigo. All rights reserved. Proprietary software. Reproduction, redistribution, decompilation, and commercial use without express written authorization are strictly prohibited. See [LICENSE](LICENSE) for details.
+* **License:** Copyright (c) 2026 Filippo Aldrigo. All rights reserved. Proprietary software. **Free to use for personal, educational, and professional BIM design.** Commercial resale, sublicensing, redistribution, or packaging by third parties for profit without express written authorization is strictly prohibited. See [LICENSE](LICENSE) for details.
 * **Disclaimer:** *Google Drive Connector for Autodesk Revit is an independent software solution and is not affiliated with, sponsored by, or endorsed by Autodesk, Inc. or Google LLC. Autodesk and Revit are registered trademarks of Autodesk, Inc. Google and Google Drive are registered trademarks of Google LLC.*
