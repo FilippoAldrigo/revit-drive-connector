@@ -1,29 +1,22 @@
 Proprietary License - All Rights Reserved
-
 Copyright (c) 2026 Filippo Aldrigo. All rights reserved.
 
-NOTICE: This software, its source code, compiled binaries, documentation, algorithms, 
-user interface designs, and associated intellectual property ("the Software") are the 
-exclusive proprietary property of Filippo Aldrigo.
+NOTICE: This software, its source code, compiled binaries, documentation, algorithms, user interface designs, and associated intellectual property ("the Software") are the exclusive proprietary property of Filippo Aldrigo.
 
-1. RESERVATION OF RIGHTS:
-   No permission is granted to copy, reproduce, modify, merge, publish, distribute, 
-   sublicense, decompile, reverse engineer, disassemble, or sell copies or derivatives 
-   of the Software, in whole or in part, without the prior express written authorization 
-   of the copyright holder.
+1. GRANT OF USE (FREE TO USE):
+Permission is hereby granted, free of charge, to any person obtaining a copy of the Software, to download, install, and execute the Software for personal, educational, and professional architectural, engineering, and BIM worksharing purposes.
 
-2. RESTRICTIONS:
-   - You may not make the source code or modified versions publicly available.
-   - You may not redistribute the binary packages, installer, or assemblies without explicit permission.
-   - Commercial redistribution, resale, or sublicensing is strictly prohibited.
+2. STRICT ANTI-RESALE & COMMERCIAL RESTRICTIONS:
+- You may NOT sell, resell, rent, lease, charge for access to, sublicense, or commercially monetize the Software or any portion thereof.
+- You may NOT redistribute, re-bundle, or re-package the installer, binaries, or assemblies for commercial profit or third-party distribution.
+- You may NOT claim authorship or ownership of the Software.
+- You may NOT reverse engineer, decompile, or disassemble the Software.
 
-3. INTELLECTUAL PROPERTY PROTECTION:
-   All patents, copyrights, trademarks, trade secrets, and other intellectual property 
-   rights embodied in the Software remain solely with Filippo Aldrigo.
+3. RESERVATION OF RIGHTS:
+All intellectual property rights, copyrights, trademarks, and trade secrets in and to the Software remain exclusively with Filippo Aldrigo.
 
-4. DISCLAIMER:
-   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-   FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-   AUTHOR OR COPYRIGHT HOLDER BE LIABLE FOR ANY DAMAGES, LOSS OF DATA, OR OTHER 
-   LIABILITY ARISING FROM THE USE OR INABILITY TO USE THE SOFTWARE.
+4. DISCLAIMER OF WARRANTIES:
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
+
+5. LIMITATION OF LIABILITY:
+IN NO EVENT SHALL THE AUTHOR OR COPYRIGHT HOLDER BE LIABLE FOR ANY DAMAGES, LOSS OF DATA, LOSS OF PROFITS, BUSINESS INTERRUPTION, OR OTHER LIABILITY ARISING FROM THE USE OR INABILITY TO USE THE SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
