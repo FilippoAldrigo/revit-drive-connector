@@ -99,8 +99,7 @@ To enable the Google Drive v3 synchronization:
 4. Click **Sign in with Google** to complete the browser authorization.
 
 > **Note for Project Teams / Testing:**  
-> When running the Google Cloud project in *Testing mode*, add your team members' Google accounts under **Test Users** in the Google Cloud Console (*OAuth consent screen*).
-> They can immediately authenticate without waiting for Google app verification.
+> When running the Google Cloud project in *Testing mode*, add your team members' Google accounts under **Test Users** in the Google Cloud Console (*OAuth consent screen*). They can immediately authenticate without waiting for Google app verification.
 
 ---
 
@@ -121,6 +120,13 @@ The solution is engineered in **.NET 10 / .NET 8 (C#)** with a high-performance 
 * All OAuth tokens and refresh tokens are stored exclusively on your local machine using encrypted Windows credential mechanisms (`%APPDATA%\RevitDriveConnector`).
 * No credentials, access tokens, project geometries, or proprietary BIM data are ever transmitted to third-party tracking servers.
 * For complete details on data processing and Google API compliance, please read our [Privacy Policy (PRIVACY.md)](PRIVACY.md).
+
+---
+
+## Authors & Co-Authorship
+
+* **Filippo Aldrigo** — Author, Lead Architect & Developer
+* **Google Gemini** — Co-Author, Software Engineering & Technical Collaboration
 
 ---
 
