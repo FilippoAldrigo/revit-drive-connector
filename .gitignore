@@ -1,0 +1,25 @@
+# Visual Studio / .NET build outputs
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Credentials & secrets
+credentials.json
+token.json
+token_store/
+
+# Build and dist outputs (keep installer if needed, ignore payload/intermediate)
+dist/payload/
+dist/test_*
+dist/*.deps.json
+dist/*.runtimeconfig.json
+dist/*.pdb
+dist/*.dll
+
+# Temporary/scratch
+scratch/bin/
+scratch/obj/
+.vs/

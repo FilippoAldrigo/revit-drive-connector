@@ -1,0 +1,9 @@
+<Project>
+  <PropertyGroup>
+    <Authors>Filippo Aldrigo, Google Gemini</Authors>
+    <Company>Filippo Aldrigo</Company>
+    <Copyright>Copyright (c) 2026 Filippo Aldrigo. All rights reserved.</Copyright>
+    <Product>Google Drive Connector for Autodesk Revit</Product>
+    <Version>1.1.0</Version>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Privacy Policy - Revit Drive Connector</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #1e293b; background-color: #f8fafc; line-height: 1.7; padding: 2rem 1rem; }
+    .container { max-width: 800px; margin: 0 auto; background: white; padding: 2.5rem; border-radius: 12px; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+    h1 { font-size: 2rem; color: #0f172a; margin-bottom: 0.5rem; }
+    .date { color: #64748b; font-size: 0.9rem; margin-bottom: 2rem; }
+    h2 { font-size: 1.25rem; color: #0f172a; margin-top: 1.75rem; margin-bottom: 0.75rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.5rem; }
+    p, ul { margin-bottom: 1rem; color: #334155; }
+    ul { padding-left: 1.5rem; }
+    li { margin-bottom: 0.5rem; }
+    a { color: #0284c7; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .highlight { background-color: #f0f9ff; border-left: 4px solid #0284c7; padding: 1rem; margin: 1.5rem 0; border-radius: 4px; }
+    .footer { margin-top: 2.5rem; padding-top: 1.5rem; border-top: 1px solid #e2e8f0; font-size: 0.9rem; color: #64748b; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Privacy Policy for Revit Drive Connector</h1>
+    <div class="date">Last updated: November 17, 2026</div>
+
+    <h2>1. Overview</h2>
+    <p>
+      Revit Drive Connector ("the Software") is a multi-user BIM worksharing add-in for Autodesk Revit engineered to facilitate secure cloud collaboration using Google Drive. This Privacy Policy outlines our practices regarding data privacy, security, and our strict compliance with Google API requirements.
+    </p>
+
+    <h2>2. Information We Access and Collect</h2>
+    <p>The Software accesses only the data strictly necessary to provide its core synchronization and collaboration features:</p>
+    <ul>
+      <li>
+        <strong>Google Account Identity:</strong> When you authenticate via Google OAuth 2.0, the Software retrieves your email address and display name solely to identify you as an active collaborator within shared Revit worksharing sessions.
+      </li>
+      <li>
+        <strong>Google Drive Access:</strong> The Software uses the Google Drive API v3 to read, write, create, and synchronize BIM project folders, Autodesk Revit central/local models (.rvt), external links (CAD, IFC, RVT), and synchronization lock manifests located within folders created or explicitly shared with you.
+      </li>
+    </ul>
+
+    <h2>3. How We Use Information</h2>
+    <p>Information accessed via Google APIs is used exclusively for:</p>
+    <ul>
+      <li>Authenticating users to their authorized Google Drive storage accounts.</li>
+      <li>Acquiring and releasing mutual-exclusion synchronization locks to prevent model corruption.</li>
+      <li>Uploading and downloading central project delta files to and from Google Drive.</li>
+      <li>Granting project folder access to team members specified by their Google email address.</li>
+    </ul>
+
+    <div class="highlight">
+      <strong>Google API Services User Data Policy Compliance:</strong><br>
+      Revit Drive Connector's use and transfer to any other app of information received from Google APIs will adhere to the 
+      <a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noopener">Google API Services User Data Policy</a>, including the <em>Limited Use</em> requirements.
+    </div>
+
+    <h2>4. Data Storage and Third-Party Sharing</h2>
+    <ul>
+      <li><strong>Zero External Telemetry:</strong> All authentication tokens, project cache files, and application settings are stored strictly on your local computer (within <code>%APPDATA%\RevitDriveConnector</code> and your configured local cache directory) and within your Google Drive account.</li>
+      <li><strong>No Third-Party Transmission:</strong> We do not collect, transmit, sell, rent, or share any personal information, tokens, project geometries, or proprietary BIM data with external advertising networks, third-party analytics providers, or external servers.</li>
+    </ul>
+
+    <h2>5. Token Security and Revocation</h2>
+    <p>
+      OAuth 2.0 access and refresh tokens are stored securely in your local Windows user profile using standard encryption mechanisms. You retain full control over your Google credentials and may revoke Revit Drive Connector's access at any time:
+    </p>
+    <ul>
+      <li>Through the "Account Google" menu directly within the Revit add-in interface.</li>
+      <li>Via your Google Account Security Dashboard at <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">https://myaccount.google.com/permissions</a>.</li>
+    </ul>
+
+    <h2>6. Contact Information</h2>
+    <p>
+      If you have questions, feedback, or concerns regarding this Privacy Policy or data security, please contact the developer:<br>
+      <strong>Developer:</strong> Filippo Aldrigo<br>
+      <strong>Email:</strong> <a href="mailto:philip.aldrigo@gmail.com">philip.aldrigo@gmail.com</a><br>
+      <strong>Repository:</strong> <a href="https://github.com/FilippoAldrigo/revit-drive-connector">https://github.com/FilippoAldrigo/revit-drive-connector</a>
+    </p>
+
+    <div class="footer">
+      <p><a href="index.html">← Back to Home</a> | <a href="terms.html">Terms of Service</a></p>
+      <p>© 2026 Filippo Aldrigo. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>
