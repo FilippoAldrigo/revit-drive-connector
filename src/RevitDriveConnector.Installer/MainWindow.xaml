@@ -1,0 +1,85 @@
+﻿<Window x:Class="RevitDriveConnector.Installer.MainWindow"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ Title="Google Drive Connector for Autodesk Revit - Setup" 
+ Height="540" Width="680"
+ Icon="Resources/app.ico"
+ WindowStartupLocation="CenterScreen"
+ ResizeMode="NoResize"
+ FontFamily="Segoe UI" FontSize="13"
+ Background="#0F172A">
+
+ <Grid>
+ <Grid.RowDefinitions>
+ <RowDefinition Height="120"/>
+ <RowDefinition Height="*"/>
+ <RowDefinition Height="75"/>
+ </Grid.RowDefinitions>
+
+ <!-- Header / Banner -->
+ <Border Grid.Row="0" Background="#1E293B" ClipToBounds="True">
+ <Grid>
+ <Image Source="Resources/banner.jpg" Stretch="UniformToFill" Opacity="0.38"/>
+ <Border Background="#CC0F172A" Padding="25,18">
+ <DockPanel VerticalAlignment="Center">
+ <Border Width="64" Height="64" CornerRadius="12" Margin="0,0,18,0" Background="#1E293B" BorderBrush="#38BDF8" BorderThickness="1.5">
+ <Image Source="Resources/app.ico" Width="54" Height="54" Stretch="Uniform"/>
+ </Border>
+ <StackPanel VerticalAlignment="Center">
+ <TextBlock Text="Google Drive Connector for Autodesk Revit" FontSize="20" FontWeight="Bold" Foreground="White"/>
+ <TextBlock x:Name="TxtHeaderSubtitle" Text="Worksharing multiutente e collaborazione cloud per Revit (2025 - 2027)" Foreground="#94A3B8" Margin="0,4,0,0"/>
+ </StackPanel>
+ </DockPanel>
+ </Border>
+ </Grid>
+ </Border>
+
+ <!-- Main Body -->
+ <Border Grid.Row="1" Background="#F8FAFC" Padding="25,20">
+ <StackPanel>
+ <TextBlock x:Name="TxtSummaryTitle" Text="Riepilogo Configurazione del Sistema" FontSize="16" FontWeight="SemiBold" Foreground="#1E293B" Margin="0,0,0,12"/>
+
+ <!-- Detection items -->
+ <Border Background="White" BorderBrush="#E2E8F0" BorderThickness="1" CornerRadius="8" Padding="15" Margin="0,0,0,15">
+ <StackPanel>
+ <!-- Revit status -->
+ <DockPanel Margin="0,0,0,10">
+ <TextBlock x:Name="LblRevitStatus" Text="Versione Revit rilevata:" FontWeight="Medium" Foreground="#475569" Width="200"/>
+ <TextBlock x:Name="TxtRevitStatus" Text="Verifica in corso..." FontWeight="Bold" Foreground="#0284C7"/>
+ </DockPanel>
+
+ <!-- Google Drive status -->
+ <DockPanel Margin="0,0,0,10">
+ <TextBlock x:Name="LblDriveStatus" Text="Google Drive rilevato:" FontWeight="Medium" Foreground="#475569" Width="200"/>
+ <TextBlock x:Name="TxtDriveStatus" Text="Verifica in corso..." FontWeight="Bold" Foreground="#10B981"/>
+ </DockPanel>
+
+ <!-- Install path -->
+ <DockPanel>
+ <TextBlock x:Name="LblInstallPath" Text="Destinazione Plugin:" FontWeight="Medium" Foreground="#475569" Width="200"/>
+ <TextBlock x:Name="TxtInstallPath" Text="%APPDATA%\RevitDriveConnector" Foreground="#64748B"/>
+ </DockPanel>
+ </StackPanel>
+ </Border>
+
+ <!-- Features bullet list -->
+ <TextBlock x:Name="TxtFeaturesHeader" Text="Funzionalità incluse nell'installazione:" FontWeight="SemiBold" Foreground="#334155" Margin="0,0,0,6"/>
+ <TextBlock x:Name="TxtFeature1" Text="• Scheda 'Drive Connector' nella barra multifunzione (Ribbon) di Revit" Foreground="#64748B" Margin="0,0,0,4"/>
+ <TextBlock x:Name="TxtFeature2" Text="• Prevenzione automatica delle corruzioni di file e lock coordinato" Foreground="#64748B" Margin="0,0,0,4"/>
+ <TextBlock x:Name="TxtFeature3" Text="• Prestito elementi e richieste di modifica istantanee stile BIM Collaborate Pro" Foreground="#64748B" Margin="0,0,0,12"/>
+
+ <!-- Status Progress Text -->
+ <TextBlock x:Name="TxtLog" Text="Pronto per l'installazione." Foreground="#0284C7" FontWeight="Medium" Margin="0,0,0,6"/>
+ <ProgressBar x:Name="PrgBar" Height="8" Minimum="0" Maximum="100" Value="0" Background="#E2E8F0" Foreground="#0284C7"/>
+ </StackPanel>
+ </Border>
+
+ <!-- Footer / Action Buttons -->
+ <Border Grid.Row="2" Background="#F1F5F9" BorderBrush="#E2E8F0" BorderThickness="0,1,0,0" Padding="25,15">
+ <DockPanel>
+ <Button x:Name="BtnCancel" Content="Esci" Width="100" Height="40" Background="#E2E8F0" Foreground="#475569" BorderThickness="0" FontWeight="SemiBold" Click="BtnCancel_Click"/>
+ <Button x:Name="BtnInstall" Content="Installa Plugin per Revit" Width="220" Height="40" HorizontalAlignment="Right" Background="#0284C7" Foreground="White" BorderThickness="0" FontWeight="Bold" FontSize="14" Click="BtnInstall_Click"/>
+ </DockPanel>
+ </Border>
+ </Grid>
+</Window>

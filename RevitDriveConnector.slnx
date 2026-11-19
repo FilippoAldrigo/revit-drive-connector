@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/RevitDriveConnector.Addin/RevitDriveConnector.Addin.csproj" />
+    <Project Path="src/RevitDriveConnector.Core/RevitDriveConnector.Core.csproj" />
+    <Project Path="src/RevitDriveConnector.Daemon/RevitDriveConnector.Daemon.csproj" />
+    <Project Path="src/RevitDriveConnector.Installer/RevitDriveConnector.Installer.csproj" />
+    <Project Path="src/RevitDriveConnector.Server/RevitDriveConnector.Server.csproj" />
+  </Folder>
+</Solution>

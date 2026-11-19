@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>Google Drive Connector for Revit 2027</Name>
+    <Assembly>%APPDATA%\RevitDriveConnector\bin\RevitDriveConnector.Addin.dll</Assembly>
+    <AddInId>8B12F0C1-6028-44A5-B7D4-1B155B907E92</AddInId>
+    <FullClassName>RevitDriveConnector.Addin.App</FullClassName>
+    <VendorId>REVIT_DRIVE_CONNECTOR</VendorId>
+    <VendorDescription>OpenCloud Worksharing Connector for Autodesk Revit</VendorDescription>
+    <UseRevitContext>false</UseRevitContext>
+  </AddIn>
+</RevitAddIns>

@@ -1,0 +1,62 @@
+<Window x:Class="RevitDriveConnector.Addin.UI.SettingsWindow"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ Title="Google Drive Connector - Impostazioni" Height="440" Width="650"
+ WindowStartupLocation="CenterScreen"
+ FontFamily="Segoe UI" FontSize="13"
+ Background="#F4F5F7">
+
+ <Grid Margin="20">
+ <Grid.RowDefinitions>
+ <RowDefinition Height="Auto"/>
+ <RowDefinition Height="*"/>
+ <RowDefinition Height="Auto"/>
+ </Grid.RowDefinitions>
+
+ <!-- Header -->
+ <StackPanel Grid.Row="0" Margin="0,0,0,20">
+ <TextBlock x:Name="TxtHeaderTitle" Text="Configurazione Drive Connector" FontSize="20" FontWeight="SemiBold" Foreground="#1E293B"/>
+ <TextBlock x:Name="TxtHeaderSubtitle" Text="Configura il percorso dello storage cloud (Google Drive, OneDrive o cartella condivisa)." Foreground="#64748B" Margin="0,4,0,0"/>
+ </StackPanel>
+
+ <!-- Form fields -->
+ <StackPanel Grid.Row="1">
+ <!-- Cloud Storage Path -->
+ <TextBlock x:Name="LblCloudPath" Text="Percorso Storage Cloud (Google Drive / Condiviso):" FontWeight="SemiBold" Foreground="#334155" Margin="0,0,0,6"/>
+ <DockPanel Margin="0,0,0,16">
+ <Button x:Name="BtnBrowseCloud" Content="Sfoglia..." Width="90" Height="34" Margin="10,0,0,0" DockPanel.Dock="Right" Background="#E2E8F0" Foreground="#1E293B" BorderThickness="0" FontWeight="Medium" Click="BtnBrowseCloud_Click"/>
+ <TextBox x:Name="TxtCloudPath" Height="34" VerticalContentAlignment="Center" Padding="8,0" Background="White" BorderBrush="#CBD5E1"/>
+ </DockPanel>
+
+ <!-- Local Cache Path -->
+ <TextBlock x:Name="LblCachePath" Text="Percorso Cache Locale (SSD Veloce):" FontWeight="SemiBold" Foreground="#334155" Margin="0,0,0,6"/>
+ <DockPanel Margin="0,0,0,16">
+ <Button x:Name="BtnBrowseCache" Content="Sfoglia..." Width="90" Height="34" Margin="10,0,0,0" DockPanel.Dock="Right" Background="#E2E8F0" Foreground="#1E293B" BorderThickness="0" FontWeight="Medium" Click="BtnBrowseCache_Click"/>
+ <TextBox x:Name="TxtCachePath" Height="34" VerticalContentAlignment="Center" Padding="8,0" Background="White" BorderBrush="#CBD5E1"/>
+ </DockPanel>
+
+ <!-- Coordinator URL -->
+ <TextBlock x:Name="LblCoordUrl" Text="Indirizzo Coordinator Server:" FontWeight="SemiBold" Foreground="#334155" Margin="0,0,0,6"/>
+ <TextBox x:Name="TxtCoordinatorUrl" Height="34" VerticalContentAlignment="Center" Padding="8,0" Background="White" BorderBrush="#CBD5E1" Margin="0,0,0,12"/>
+
+ <!-- Language Selection -->
+ <TextBlock x:Name="LblLanguage" Text="Lingua Interfaccia (Language):" FontWeight="SemiBold" Foreground="#334155" Margin="0,0,0,6"/>
+ <ComboBox x:Name="CmbLanguage" Height="34" VerticalContentAlignment="Center" Margin="0,0,0,16">
+ <ComboBoxItem Content="Auto (Rileva da Revit / Auto-detect)"/>
+ <ComboBoxItem Content="Italiano"/>
+ <ComboBoxItem Content="English"/>
+ </ComboBox>
+
+ <!-- Status info -->
+ <Border Background="#E0F2FE" BorderBrush="#BAE6FD" BorderThickness="1" CornerRadius="4" Padding="10">
+ <TextBlock x:Name="TxtStatus" Text="Stato: Servizio attivo e connesso." Foreground="#0369A1" FontSize="12"/>
+ </Border>
+ </StackPanel>
+
+ <!-- Bottom Buttons -->
+ <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,15,0,0">
+ <Button x:Name="BtnCancel" Content="Annulla" Width="90" Height="36" Margin="0,0,10,0" Background="#F1F5F9" Foreground="#475569" BorderThickness="1" BorderBrush="#CBD5E1" Click="BtnCancel_Click"/>
+ <Button x:Name="BtnSave" Content="Salva Impostazioni" Width="150" Height="36" Background="#0284C7" Foreground="White" FontWeight="Bold" BorderThickness="0" Click="BtnSave_Click"/>
+ </StackPanel>
+ </Grid>
+</Window>
