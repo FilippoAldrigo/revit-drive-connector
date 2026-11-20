@@ -22,61 +22,58 @@ namespace RevitDriveConnector.Addin.Services
             var doc = app.ActiveUIDocument?.Document;
             if (doc == null || !doc.IsWorkshared) return;
 
-            string centralPath = SynchronizationCoordinator.GetCentralModelPath(doc);
             string username = doc.Application.Username;
+            var batch = new List<BorrowRequest>();
+            while (PendingGrants.TryDequeue(out var item))
+            {
+                batch.Add(item);
+            }
+            if (batch.Count == 0) return;
 
-            bool relinquishedAny = false;
-            while (PendingGrants.TryDequeue(out var req))
+            bool ok = SynchronizationCoordinator.ExecuteLockedCentralOperation(doc, () =>
+            {
+                var relOptions = new RelinquishOptions(false)
+                {
+                    CheckedOutElements = true,
+                    StandardWorksets = false,
+                    ViewWorksets = false,
+                    FamilyWorksets = false,
+                    UserWorksets = true
+                };
+                WorksharingUtils.RelinquishOwnership(doc, relOptions, new TransactWithCentralOptions());
+                return true;
+            }, out string err);
+
+            if (!ok)
+            {
+                System.Windows.MessageBox.Show(
+                    $"Impossibile concedere e caricare il rilascio su Google Drive in sicurezza:\n{err}\n\nRiprova dal Centro Prestiti o sincronizza prima il modello.",
+                    "Drive Connector - Concessione Prestito",
+                    System.Windows.MessageBoxButton.OK,
+                    System.Windows.MessageBoxImage.Warning);
+                return;
+            }
+
+            foreach (var req in batch)
             {
                 try
                 {
-                    if (!relinquishedAny)
+                    var respTask = Task.Run(() => IpcClient.SendRequestAsync(new IpcRequest
                     {
-                        var relOptions = new RelinquishOptions(false)
+                        Command = IpcCommand.RespondToBorrowRequest,
+                        PayloadJson = JsonSerializer.Serialize(new
                         {
-                            CheckedOutElements = true,
-                            StandardWorksets = false,
-                            ViewWorksets = false,
-                            FamilyWorksets = false,
-                            UserWorksets = true
-                        };
-                        WorksharingUtils.RelinquishOwnership(doc, relOptions, new TransactWithCentralOptions());
-                        relinquishedAny = true;
-                    }
-
-                    _ = Task.Run(async () =>
-                    {
-                        if (!string.IsNullOrEmpty(centralPath))
-                        {
-                            await IpcClient.SendRequestAsync(new IpcRequest
-                            {
-                                Command = IpcCommand.UploadProjectChanges,
-                                PayloadJson = JsonSerializer.Serialize(new
-                                {
-                                    ProjectId = req.ProjectId,
-                                    CentralPath = centralPath,
-                                    LockToken = "",
-                                    User = username
-                                })
-                            }, timeoutMs: 60000);
-                        }
-
-                        await IpcClient.SendRequestAsync(new IpcRequest
-                        {
-                            Command = IpcCommand.RespondToBorrowRequest,
-                            PayloadJson = JsonSerializer.Serialize(new
-                            {
-                                ProjectId = req.ProjectId,
-                                RequestId = req.RequestId,
-                                Status = "Granted",
-                                User = username
-                            })
-                        }, timeoutMs: 10000);
-                    });
+                            ProjectId = req.ProjectId,
+                            RequestId = req.RequestId,
+                            Status = "Granted",
+                            User = username
+                        })
+                    }, timeoutMs: 10000));
+                    respTask.Wait();
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[BorrowGrantExternalHandler] Error granting borrow: {ex.Message}");
+                    Console.WriteLine($"[BorrowGrantExternalHandler] Error responding to borrow: {ex.Message}");
                 }
             }
         }
@@ -115,9 +112,9 @@ namespace RevitDriveConnector.Addin.Services
             }
         }
 
-        public static void RelinquishAndGrantImmediate(Document doc, BorrowRequest request, string username)
+        public static bool RelinquishAndGrantImmediate(Document doc, BorrowRequest request, string username, out string errorMessage)
         {
-            try
+            return SynchronizationCoordinator.ExecuteLockedCentralOperation(doc, () =>
             {
                 var relOptions = new RelinquishOptions(false)
                 {
@@ -128,34 +125,14 @@ namespace RevitDriveConnector.Addin.Services
                     UserWorksets = true
                 };
                 WorksharingUtils.RelinquishOwnership(doc, relOptions, new TransactWithCentralOptions());
-
-                string centralPath = SynchronizationCoordinator.GetCentralModelPath(doc);
-                if (!string.IsNullOrEmpty(centralPath))
-                {
-                    var upTask = Task.Run(() => IpcClient.SendRequestAsync(new IpcRequest
-                    {
-                        Command = IpcCommand.UploadProjectChanges,
-                        PayloadJson = JsonSerializer.Serialize(new
-                        {
-                            ProjectId = request.ProjectId,
-                            CentralPath = centralPath,
-                            LockToken = "",
-                            User = username
-                        })
-                    }, timeoutMs: 60000));
-                    upTask.Wait();
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[BorrowNotificationService] RelinquishAndGrantImmediate notice: {ex.Message}");
-            }
+                return true;
+            }, out errorMessage);
         }
 
         public static void OnIdlingCheck(UIApplication uiapp)
         {
             if (_isChecking) return;
-            if ((DateTime.UtcNow - _lastCheckTime).TotalSeconds < 3.5) return;
+            if ((DateTime.UtcNow - _lastCheckTime).TotalSeconds < 15.0) return;
 
             _lastCheckTime = DateTime.UtcNow;
 
@@ -230,10 +207,11 @@ namespace RevitDriveConnector.Addin.Services
                 }
             }
 
+            var outgoingPayload = JsonSerializer.Serialize(new { ProjectId = projectId, User = username, SkipCloudPull = "true" });
             var respOut = await IpcClient.SendRequestAsync(new IpcRequest
             {
                 Command = IpcCommand.GetOutgoingBorrowRequests,
-                PayloadJson = payload
+                PayloadJson = outgoingPayload
             }, timeoutMs: 3000);
 
             if (respOut.Success && !string.IsNullOrEmpty(respOut.DataJson))

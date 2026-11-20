@@ -18,6 +18,10 @@ namespace RevitDriveConnector.Addin.UI
  private CancellationTokenSource? _cts;
  public bool IsAlignedAndReady { get; private set; }
  public bool UserCancelled { get; private set; }
+ public long? CloudVersion { get; private set; }
+ public string ExpectedHash { get; private set; } = string.Empty;
+ public bool WasUpdatedFromCloud { get; private set; }
+ public string? ErrorMessage { get; private set; }
 
  public SyncGatekeeperDialog(string projectId, string username)
  {
@@ -48,6 +52,7 @@ namespace RevitDriveConnector.Addin.UI
 
  try
  {
+ int consecutiveFatalErrors = 0;
  while (!_cts.Token.IsCancellationRequested && elapsedSeconds < maxWaitSeconds)
  {
  var payload = JsonSerializer.Serialize(new
@@ -69,6 +74,10 @@ namespace RevitDriveConnector.Addin.UI
  {
  if (result.IsAligned)
  {
+ CloudVersion = result.CloudVersion;
+ ExpectedHash = result.ExpectedHash ?? string.Empty;
+ WasUpdatedFromCloud = result.WasUpdatedFromCloud;
+
  TxtStatus.Text = Loc.Tr("Gatekeeper_Aligned");
  TxtStatus.Foreground = System.Windows.Media.Brushes.LightGreen;
  await Task.Delay(500);
@@ -83,6 +92,41 @@ namespace RevitDriveConnector.Addin.UI
  {
  TxtStatus.Text = result.Message;
  }
+
+ if (!result.IsWaitingForDownload)
+ {
+ consecutiveFatalErrors++;
+ if (consecutiveFatalErrors >= 2)
+ {
+ ErrorMessage = result.Message;
+ TxtStatus.Foreground = System.Windows.Media.Brushes.Coral;
+ await Task.Delay(1500);
+ DialogResult = false;
+ Close();
+ return;
+ }
+ }
+ else
+ {
+ consecutiveFatalErrors = 0;
+ }
+ }
+ }
+ else
+ {
+ consecutiveFatalErrors++;
+ if (!string.IsNullOrEmpty(resp.ErrorMessage))
+ {
+ TxtStatus.Text = resp.ErrorMessage;
+ }
+ if (consecutiveFatalErrors >= 2)
+ {
+ ErrorMessage = resp.ErrorMessage ?? "Errore di comunicazione con il servizio Drive Connector.";
+ TxtStatus.Foreground = System.Windows.Media.Brushes.Coral;
+ await Task.Delay(1500);
+ DialogResult = false;
+ Close();
+ return;
  }
  }
 

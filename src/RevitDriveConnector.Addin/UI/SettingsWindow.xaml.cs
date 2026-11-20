@@ -1,6 +1,9 @@
 using System;
 using System.IO;
+using System.Text.Json;
+using System.Threading.Tasks;
 using System.Windows;
+using RevitDriveConnector.Core.IPC;
 using RevitDriveConnector.Core.Localization;
 using RevitDriveConnector.Core.Models;
 
@@ -9,6 +12,7 @@ namespace RevitDriveConnector.Addin.UI
  public partial class SettingsWindow : Window
  {
  private readonly AppConfig _config;
+ private readonly NamedPipeIpcClient _ipcClient = new();
 
  public SettingsWindow()
  {
@@ -28,6 +32,33 @@ namespace RevitDriveConnector.Addin.UI
  "en" => 2,
  _ => 0
  };
+
+ Loaded += async (s, e) => await LoadLiveStatusAsync();
+ }
+
+ private async Task LoadLiveStatusAsync()
+ {
+ try
+ {
+ var resp = await _ipcClient.SendRequestAsync(new IpcRequest
+ {
+ Command = IpcCommand.GetDaemonStatus
+ }, timeoutMs: 5000);
+
+ if (resp.Success && !string.IsNullOrEmpty(resp.DataJson))
+ {
+ var info = JsonSerializer.Deserialize<DaemonStatusInfo>(resp.DataJson);
+ if (info != null)
+ {
+ TxtStatus.Text = info.GoogleDriveConnected
+ ? $"Stato: Connesso a Google Drive ({info.GoogleAccountEmail})"
+ : $"Stato: Account Google non connesso (Modalità cartella locale: {info.CloudStoragePath})";
+ return;
+ }
+ }
+ }
+ catch { }
+ TxtStatus.Text = "Stato: Motore cloud locale pronto.";
  }
 
  private void ApplyLocalization()
@@ -84,6 +115,11 @@ namespace RevitDriveConnector.Addin.UI
  if (string.IsNullOrWhiteSpace(TxtCloudPath.Text))
  {
  MessageBox.Show("Il percorso dello storage cloud non puo essere vuoto.", "Attenzione", MessageBoxButton.OK, MessageBoxImage.Warning);
+ return;
+ }
+ if (string.IsNullOrWhiteSpace(TxtCachePath.Text))
+ {
+ MessageBox.Show("Il percorso della cache locale non puo essere vuoto.", "Attenzione", MessageBoxButton.OK, MessageBoxImage.Warning);
  return;
  }
 

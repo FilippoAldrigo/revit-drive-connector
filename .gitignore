@@ -17,9 +17,12 @@ dist/test_*
 dist/*.deps.json
 dist/*.runtimeconfig.json
 dist/*.pdb
+dist/*/*.pdb
 dist/*.dll
+dist/*/*.dll
+dist/*.zip
+dist/standalone/*.pdb
 
 # Temporary/scratch
-scratch/bin/
-scratch/obj/
+scratch/
 .vs/

@@ -41,6 +41,11 @@ namespace RevitDriveConnector.Core.Models
  [JsonPropertyName("createdAtUtc")]
  public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 
+ [JsonIgnore]
+ public DateTime CreatedAtLocal => CreatedAtUtc.Kind == DateTimeKind.Utc
+ ? CreatedAtUtc.ToLocalTime()
+ : DateTime.SpecifyKind(CreatedAtUtc, DateTimeKind.Utc).ToLocalTime();
+
  [JsonPropertyName("respondedAtUtc")]
  public DateTime? RespondedAtUtc { get; set; }
 

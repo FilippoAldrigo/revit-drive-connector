@@ -30,7 +30,11 @@ namespace RevitDriveConnector.Addin.Commands
                 if (doc != null && doc.IsWorkshared)
                 {
                     string centralPath = SynchronizationCoordinator.GetCentralModelPath(doc);
-                    projectName = SynchronizationCoordinator.ExtractProjectName(centralPath);
+                    if (SynchronizationCoordinator.IsDriveManagedPath(doc.PathName) ||
+                        SynchronizationCoordinator.IsDriveManagedPath(centralPath))
+                    {
+                        projectName = SynchronizationCoordinator.ExtractProjectName(centralPath);
+                    }
                 }
 
                 var reqPayload = JsonSerializer.Serialize(new Dictionary<string, string>

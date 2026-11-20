@@ -243,8 +243,9 @@ namespace RevitDriveConnector.Core.Services
 
                     case IpcCommand.DownloadAndPrepareProject:
                         var prepReq = JsonSerializer.Deserialize<Dictionary<string, string>>(request.PayloadJson);
-                        string projectName = prepReq?["ProjectName"] ?? "";
-                        string centralPath = await DriveService.DownloadAndPrepareProjectAsync(projectName, ct);
+                        string projectName = prepReq != null && prepReq.TryGetValue("ProjectName", out var pnVal) ? pnVal : "";
+                        string? prefFolderId = prepReq != null && prepReq.TryGetValue("CloudFolderId", out var cfVal) && !string.IsNullOrWhiteSpace(cfVal) ? cfVal : null;
+                        string centralPath = await DriveService.DownloadAndPrepareProjectAsync(projectName, prefFolderId, ct);
                         return new IpcResponse
                         {
                             RequestId = request.RequestId,
@@ -262,25 +263,27 @@ namespace RevitDriveConnector.Core.Services
                             return new IpcResponse { RequestId = request.RequestId, Success = false, ErrorMessage = "Dati lock non validi" };
                         }
 
-                        string cloudProjectDir = await DriveService.ResolveAndSyncConnectorDirAsync(lockReq.ProjectId, pullFromCloud: true, ct);
-                        var fileLockResp = FileBasedLockManager.AcquireLock(
-                            cloudProjectDir,
-                            lockReq.ProjectId,
-                            lockReq.User,
-                            lockReq.Machine,
-                            lockReq.TimeoutSeconds);
+                        var driveLockResp = await DriveService.AcquireProjectLockAsync(lockReq, ct);
+                        if (driveLockResp.Status == SyncLockStatus.Error)
+                        {
+                            return new IpcResponse
+                            {
+                                RequestId = request.RequestId,
+                                Success = false,
+                                ErrorMessage = driveLockResp.Message,
+                                DataJson = JsonSerializer.Serialize(driveLockResp)
+                            };
+                        }
 
-                        if (fileLockResp.Status != SyncLockStatus.LockAcquired)
+                        if (driveLockResp.Status != SyncLockStatus.LockAcquired)
                         {
                             return new IpcResponse
                             {
                                 RequestId = request.RequestId,
                                 Success = true,
-                                DataJson = JsonSerializer.Serialize(fileLockResp)
+                                DataJson = JsonSerializer.Serialize(driveLockResp)
                             };
                         }
-
-                        await DriveService.PushConnectorStateToCloudAsync(lockReq.ProjectId, cloudProjectDir, ct);
 
                         try
                         {
@@ -289,8 +292,7 @@ namespace RevitDriveConnector.Core.Services
                             var coordResponse = await postResp.Content.ReadFromJsonAsync<LockResponse>(cancellationToken: coordCts.Token);
                             if (coordResponse != null && coordResponse.Status == SyncLockStatus.LockDeniedBusy)
                             {
-                                FileBasedLockManager.ReleaseLock(cloudProjectDir, fileLockResp.LockToken ?? "", lockReq.User);
-                                await DriveService.PushConnectorStateToCloudAsync(lockReq.ProjectId, cloudProjectDir, ct);
+                                await DriveService.ReleaseProjectLockAsync(lockReq.ProjectId, driveLockResp.LockToken ?? "", lockReq.User, ct);
                                 return new IpcResponse
                                 {
                                     RequestId = request.RequestId,
@@ -305,50 +307,112 @@ namespace RevitDriveConnector.Core.Services
                         {
                             RequestId = request.RequestId,
                             Success = true,
-                            DataJson = JsonSerializer.Serialize(fileLockResp)
+                            DataJson = JsonSerializer.Serialize(driveLockResp)
                         };
 
                     case IpcCommand.HeartbeatSyncLock:
                         var hbReq = JsonSerializer.Deserialize<Dictionary<string, string>>(request.PayloadJson);
-                        string hbProj = hbReq?["ProjectId"] ?? "";
-                        string hbToken = hbReq?["LockToken"] ?? "";
-                        string hbUser = hbReq?["User"] ?? "";
-                        string hbDir = await DriveService.ResolveAndSyncConnectorDirAsync(hbProj, pullFromCloud: false, ct);
-                        bool hbOk = FileBasedLockManager.HeartbeatLock(hbDir, hbToken, hbUser, config.SyncTimeoutSeconds);
+                        string hbProj = hbReq != null && hbReq.TryGetValue("ProjectId", out var hp) ? hp : "";
+                        string hbToken = hbReq != null && hbReq.TryGetValue("LockToken", out var ht) ? ht : "";
+                        string hbUser = hbReq != null && hbReq.TryGetValue("User", out var hu) ? hu : "";
+                        bool hbOk = await DriveService.HeartbeatProjectLockAsync(hbProj, hbToken, hbUser, config.SyncTimeoutSeconds, ct);
                         if (hbOk)
                         {
-                            await DriveService.PushConnectorStateToCloudAsync(hbProj, hbDir, ct);
+                            try
+                            {
+                                using var coordCts = new CancellationTokenSource(1200);
+                                await HttpClient.PostAsJsonAsync($"{config.CoordinatorUrl}/api/lock/acquire", new LockRequest
+                                {
+                                    ProjectId = hbProj,
+                                    User = hbUser,
+                                    Machine = Environment.MachineName,
+                                    TimeoutSeconds = config.SyncTimeoutSeconds
+                                }, coordCts.Token);
+                            }
+                            catch { }
                         }
                         return new IpcResponse { RequestId = request.RequestId, Success = hbOk };
 
                     case IpcCommand.ReleaseSyncLock:
                     case IpcCommand.UploadProjectChanges:
-                        var uploadReq = JsonSerializer.Deserialize<Dictionary<string, string>>(request.PayloadJson);
-                        string upProj = uploadReq != null && uploadReq.TryGetValue("ProjectId", out var pVal) ? pVal : "";
-                        string upCentral = uploadReq != null && uploadReq.TryGetValue("CentralPath", out var cVal) ? cVal : "";
-                        string token = uploadReq != null && uploadReq.TryGetValue("LockToken", out var tVal) ? tVal : "";
-                        string user = uploadReq != null && uploadReq.TryGetValue("User", out var uVal) ? uVal : "";
+                        string upProj = "";
+                        string upCentral = "";
+                        string token = "";
+                        string user = "";
+                        long? expectedBaseVersion = null;
+                        string? expectedBaseHash = null;
+
+                        using (var payloadDoc = JsonDocument.Parse(string.IsNullOrWhiteSpace(request.PayloadJson) ? "{}" : request.PayloadJson))
+                        {
+                            var root = payloadDoc.RootElement;
+                            if (root.TryGetProperty("ProjectId", out var pEl) && pEl.ValueKind == JsonValueKind.String) upProj = pEl.GetString() ?? "";
+                            if (root.TryGetProperty("CentralPath", out var cEl) && cEl.ValueKind == JsonValueKind.String) upCentral = cEl.GetString() ?? "";
+                            if (root.TryGetProperty("LockToken", out var tEl) && tEl.ValueKind == JsonValueKind.String) token = tEl.GetString() ?? "";
+                            if (root.TryGetProperty("User", out var uEl) && uEl.ValueKind == JsonValueKind.String) user = uEl.GetString() ?? "";
+                            if (root.TryGetProperty("ExpectedBaseVersion", out var vEl) && vEl.ValueKind == JsonValueKind.Number && vEl.TryGetInt64(out var parsedVer))
+                                expectedBaseVersion = parsedVer;
+                            if (root.TryGetProperty("ExpectedBaseHash", out var hEl) && hEl.ValueKind == JsonValueKind.String)
+                                expectedBaseHash = hEl.GetString();
+                        }
 
                         if (request.Command == IpcCommand.UploadProjectChanges && !string.IsNullOrEmpty(upCentral))
                         {
-                            await DriveService.UploadProjectChangesAsync(upProj, upCentral, user, ct);
-                        }
-
-                        string upCloudProjectDir = await DriveService.ResolveAndSyncConnectorDirAsync(upProj, pullFromCloud: false, ct);
-                        FileBasedLockManager.ReleaseLock(upCloudProjectDir, token, user);
-                        await DriveService.PushConnectorStateToCloudAsync(upProj, upCloudProjectDir, ct);
-
-                        try
-                        {
-                            using var relCts = new CancellationTokenSource(1500);
-                            await HttpClient.PostAsJsonAsync($"{config.CoordinatorUrl}/api/lock/release", new
+                            try
                             {
-                                ProjectId = upProj,
-                                LockToken = token,
-                                User = user
-                            }, relCts.Token);
+                                var (lockValid, lockReason) = await DriveService.VerifyLockOwnershipAsync(upProj, token, user, ct);
+                                if (!lockValid)
+                                {
+                                    return new IpcResponse
+                                    {
+                                        RequestId = request.RequestId,
+                                        Success = false,
+                                        ErrorMessage = lockReason
+                                    };
+                                }
+
+                                await DriveService.UploadProjectChangesAsync(
+                                    upProj,
+                                    upCentral,
+                                    user,
+                                    expectedBaseVersion,
+                                    expectedBaseHash,
+                                    isInitialCreate: false,
+                                    ct: ct);
+                            }
+                            finally
+                            {
+                                if (!string.IsNullOrWhiteSpace(token))
+                                {
+                                    try { await DriveService.ReleaseProjectLockAsync(upProj, token, user, CancellationToken.None); } catch { }
+                                    try
+                                    {
+                                        using var relCts = new CancellationTokenSource(1500);
+                                        await HttpClient.PostAsJsonAsync($"{config.CoordinatorUrl}/api/lock/release", new
+                                        {
+                                            ProjectId = upProj,
+                                            LockToken = token,
+                                            User = user
+                                        }, relCts.Token);
+                                    }
+                                    catch { }
+                                }
+                            }
                         }
-                        catch { }
+                        else
+                        {
+                            await DriveService.ReleaseProjectLockAsync(upProj, token, user, ct);
+                            try
+                            {
+                                using var relCts = new CancellationTokenSource(1500);
+                                await HttpClient.PostAsJsonAsync($"{config.CoordinatorUrl}/api/lock/release", new
+                                {
+                                    ProjectId = upProj,
+                                    LockToken = token,
+                                    User = user
+                                }, relCts.Token);
+                            }
+                            catch { }
+                        }
 
                         return new IpcResponse
                         {
@@ -357,14 +421,29 @@ namespace RevitDriveConnector.Core.Services
                             DataJson = "Modifiche caricate e lock rilasciato."
                         };
 
+                    case IpcCommand.UploadProjectLinks:
+                        var linksReq = JsonSerializer.Deserialize<Dictionary<string, string>>(request.PayloadJson);
+                        string lnkProj = linksReq != null && linksReq.TryGetValue("ProjectId", out var lpVal) ? lpVal : "";
+                        string lnkDir = linksReq != null && linksReq.TryGetValue("LinksDir", out var ldVal) ? ldVal : "";
+                        if (!string.IsNullOrEmpty(lnkProj) && !string.IsNullOrEmpty(lnkDir))
+                        {
+                            await DriveService.UploadProjectLinksAsync(lnkProj, lnkDir, ct);
+                        }
+                        return new IpcResponse
+                        {
+                            RequestId = request.RequestId,
+                            Success = true,
+                            DataJson = "Collegamenti esterni caricati su Google Drive."
+                        };
+
                     case IpcCommand.CreateCloudProject:
                         var createReq = JsonSerializer.Deserialize<Dictionary<string, string>>(request.PayloadJson);
                         string newProj = createReq?["ProjectName"] ?? "";
                         string newCentral = createReq?["CentralPath"] ?? "";
                         string newUser = createReq?["User"] ?? "";
 
-                        await DriveService.UpdateActiveUserSessionAsync(newProj, newUser, Environment.MachineName, isActive: true, isSyncing: false, ct);
                         await DriveService.CreateCloudProjectAsync(newProj, newCentral, newUser, ct);
+                        await DriveService.UpdateActiveUserSessionAsync(newProj, newUser, Environment.MachineName, isActive: true, isSyncing: false, ct);
 
                         return new IpcResponse
                         {
@@ -394,9 +473,10 @@ namespace RevitDriveConnector.Core.Services
 
                     case IpcCommand.GetOutgoingBorrowRequests:
                         var outReq = JsonSerializer.Deserialize<Dictionary<string, string>>(request.PayloadJson);
-                        string outProj = outReq?["ProjectId"] ?? "";
-                        string outUser = outReq?["User"] ?? "";
-                        string outCloudDir = await DriveService.ResolveAndSyncConnectorDirAsync(outProj, pullFromCloud: true, ct);
+                        string outProj = outReq != null && outReq.TryGetValue("ProjectId", out var opOut) ? opOut : "";
+                        string outUser = outReq != null && outReq.TryGetValue("User", out var ouOut) ? ouOut : "";
+                        bool skipPull = outReq != null && outReq.TryGetValue("SkipCloudPull", out var spVal) && string.Equals(spVal, "true", StringComparison.OrdinalIgnoreCase);
+                        string outCloudDir = await DriveService.ResolveAndSyncConnectorDirAsync(outProj, pullFromCloud: !skipPull, ct);
                         var outgoing = BorrowRequestManager.GetOutgoingRequestsForUser(outCloudDir, outUser);
                         return new IpcResponse { RequestId = request.RequestId, Success = true, DataJson = JsonSerializer.Serialize(outgoing) };
 
@@ -445,14 +525,12 @@ namespace RevitDriveConnector.Core.Services
                     case IpcCommand.ForceBreakLock:
                         var breakReq = JsonSerializer.Deserialize<Dictionary<string, string>>(request.PayloadJson);
                         string breakProj = breakReq?["ProjectId"] ?? "";
-                        string bCloudDir = await DriveService.ResolveAndSyncConnectorDirAsync(breakProj, pullFromCloud: false, ct);
-                        bool bSuccess = FileBasedLockManager.ForceBreakLock(bCloudDir);
-                        await DriveService.PushConnectorStateToCloudAsync(breakProj, bCloudDir, ct);
+                        bool bSuccess = await DriveService.ForceBreakProjectLockAsync(breakProj, ct);
                         return new IpcResponse
                         {
                             RequestId = request.RequestId,
                             Success = bSuccess,
-                            DataJson = "Lock rimosso con successo."
+                            DataJson = bSuccess ? "Lock rimosso con successo." : "Impossibile rimuovere il lock su Google Drive."
                         };
 
                     default:

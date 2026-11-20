@@ -13,6 +13,7 @@ namespace RevitDriveConnector.Addin.Services
         public ElementId ElementId { get; set; } = ElementId.InvalidElementId;
         public string Name { get; set; } = string.Empty;
         public string CurrentPath { get; set; } = string.Empty;
+        public string ResolvedPath { get; set; } = string.Empty;
         public string TargetRelativePath { get; set; } = string.Empty;
         public ExternalFileReferenceType ReferenceType { get; set; }
         public PathType PathType { get; set; }
@@ -49,14 +50,31 @@ namespace RevitDriveConnector.Addin.Services
                     var pathType = extRef.PathType;
                     var refType = extRef.ExternalFileReferenceType;
 
-                    bool exists = !string.IsNullOrEmpty(pathStr) && File.Exists(pathStr);
                     bool isRel = pathType == PathType.Relative || pathStr.StartsWith("..\\", StringComparison.OrdinalIgnoreCase) || pathStr.StartsWith(".\\", StringComparison.OrdinalIgnoreCase);
-                    bool isInsideDrive = isRel || (!string.IsNullOrEmpty(projectDir) && pathStr.IndexOf(projectDir, StringComparison.OrdinalIgnoreCase) >= 0) || pathStr.IndexOf("RevitProjects", StringComparison.OrdinalIgnoreCase) >= 0;
+                    string resolvedPath = pathStr;
+                    try
+                    {
+                        var absMp = extRef.GetAbsolutePath();
+                        if (absMp != null)
+                        {
+                            string absStr = ModelPathUtils.ConvertModelPathToUserVisiblePath(absMp);
+                            if (!string.IsNullOrEmpty(absStr)) resolvedPath = absStr;
+                        }
+                        else if (isRel && !string.IsNullOrEmpty(doc.PathName))
+                        {
+                            string docDir = Path.GetDirectoryName(doc.PathName) ?? string.Empty;
+                            if (!string.IsNullOrEmpty(docDir)) resolvedPath = Path.GetFullPath(Path.Combine(docDir, pathStr));
+                        }
+                    }
+                    catch { }
+
+                    bool exists = !string.IsNullOrEmpty(resolvedPath) && File.Exists(resolvedPath);
+                    bool isInsideDrive = isRel || (!string.IsNullOrEmpty(projectDir) && resolvedPath.IndexOf(projectDir, StringComparison.OrdinalIgnoreCase) >= 0) || resolvedPath.IndexOf("RevitProjects", StringComparison.OrdinalIgnoreCase) >= 0;
 
                     string statusDesc;
                     string color;
 
-                    if (status == LinkedFileStatus.NotFound || (!exists && !isRel))
+                    if (status == LinkedFileStatus.NotFound || (!exists && status != LinkedFileStatus.Loaded))
                     {
                         statusDesc = "Non Trovato";
                         color = "#EF4444";
@@ -82,6 +100,7 @@ namespace RevitDriveConnector.Addin.Services
                         ElementId = elemId,
                         Name = fileName,
                         CurrentPath = pathStr,
+                        ResolvedPath = resolvedPath,
                         TargetRelativePath = $@"..\Links\{fileName}",
                         ReferenceType = refType,
                         PathType = pathType,
@@ -150,19 +169,23 @@ namespace RevitDriveConnector.Addin.Services
                         string fileName = item.Name;
                         string targetLocalFile = Path.Combine(localLinksDir, fileName);
 
-                        if (File.Exists(item.CurrentPath))
+                        string sourcePath = !string.IsNullOrEmpty(item.ResolvedPath) && File.Exists(item.ResolvedPath)
+                            ? item.ResolvedPath
+                            : item.CurrentPath;
+
+                        if (File.Exists(sourcePath))
                         {
-                            if (!File.Exists(targetLocalFile) || new FileInfo(item.CurrentPath).Length != new FileInfo(targetLocalFile).Length)
+                            if (!File.Exists(targetLocalFile) || new FileInfo(sourcePath).Length != new FileInfo(targetLocalFile).Length)
                             {
-                                File.Copy(item.CurrentPath, targetLocalFile, true);
+                                File.Copy(sourcePath, targetLocalFile, true);
                             }
 
                             if (cloudLinksDir != null)
                             {
                                 string targetCloudFile = Path.Combine(cloudLinksDir, fileName);
-                                if (!File.Exists(targetCloudFile) || new FileInfo(item.CurrentPath).Length != new FileInfo(targetCloudFile).Length)
+                                if (!File.Exists(targetCloudFile) || new FileInfo(sourcePath).Length != new FileInfo(targetCloudFile).Length)
                                 {
-                                    try { File.Copy(item.CurrentPath, targetCloudFile, true); } catch { }
+                                    try { File.Copy(sourcePath, targetCloudFile, true); } catch { }
                                 }
                             }
                         }
@@ -229,7 +252,9 @@ namespace RevitDriveConnector.Addin.Services
                 string cloudLinksDir = !string.IsNullOrEmpty(cloudDir) ? Path.Combine(cloudDir, "Links") : string.Empty;
 
                 var links = GetProjectLinks(doc);
-                var broken = links.Where(l => l.Status == LinkedFileStatus.NotFound || (!l.ExistsLocally && !string.IsNullOrEmpty(l.Name))).ToList();
+                var broken = links.Where(l =>
+                    l.Status == LinkedFileStatus.NotFound ||
+                    (l.Status != LinkedFileStatus.Loaded && !l.ExistsLocally && !string.IsNullOrEmpty(l.Name))).ToList();
 
                 if (broken.Count == 0) return;
 

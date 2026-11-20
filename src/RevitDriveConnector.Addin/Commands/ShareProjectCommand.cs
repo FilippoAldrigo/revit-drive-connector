@@ -21,18 +21,13 @@ namespace RevitDriveConnector.Addin.Commands
  if (uidoc != null && uidoc.Document != null)
  {
  var doc = uidoc.Document;
- string centralPath = SynchronizationCoordinator.GetCentralModelPath(doc);
- projectName = SynchronizationCoordinator.ActiveProjectId 
- ?? Path.GetFileNameWithoutExtension(centralPath);
-
- if (projectName.EndsWith("_Central", StringComparison.OrdinalIgnoreCase))
+ string centralPath = doc.IsWorkshared ? SynchronizationCoordinator.GetCentralModelPath(doc) : string.Empty;
+ if (SynchronizationCoordinator.IsDriveManagedPath(doc.PathName) ||
+ SynchronizationCoordinator.IsDriveManagedPath(centralPath))
  {
- projectName = projectName.Substring(0, projectName.Length - "_Central".Length);
- }
- string userSuffix = "_" + doc.Application.Username;
- if (projectName.EndsWith(userSuffix, StringComparison.OrdinalIgnoreCase))
- {
- projectName = projectName.Substring(0, projectName.Length - userSuffix.Length);
+ projectName = !string.IsNullOrEmpty(centralPath)
+ ? SynchronizationCoordinator.ExtractProjectName(centralPath)
+ : (SynchronizationCoordinator.ActiveProjectId ?? Path.GetFileNameWithoutExtension(doc.PathName));
  }
  }
 

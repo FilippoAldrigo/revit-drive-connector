@@ -1,15 +1,16 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="it">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="google-site-verification" content="uoK481bqqEpNiYgpuczWoAkFl-RK89gWNmBn9Zv76Sw" />
-  <title>Google Drive Connector for Autodesk Revit</title>
+  <title>Google Drive Connector for Autodesk Revit - Cloud Worksharing & Anti-Collision</title>
   <link rel="icon" href="https://img.icons8.com/color/48/google-drive--v1.png" type="image/png">
   <style>
     :root {
       --primary: #0284c7;
       --primary-dark: #0369a1;
+      --emerald-600: #059669;
       --slate-900: #0f172a;
       --slate-800: #1e293b;
       --slate-700: #334155;
@@ -19,25 +20,46 @@
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: var(--slate-800); background-color: var(--slate-50); line-height: 1.6; }
-    header { background: white; border-bottom: 1px solid #e2e8f0; padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; }
+    header { background: white; border-bottom: 1px solid #e2e8f0; padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 100; }
     .logo-container { display: flex; align-items: center; gap: 0.75rem; text-decoration: none; color: var(--slate-900); font-weight: 700; font-size: 1.25rem; }
     .logo-container img { height: 32px; width: 32px; }
     nav a { margin-left: 1.5rem; text-decoration: none; color: var(--slate-600); font-weight: 500; }
     nav a:hover { color: var(--primary); }
-    .hero { max-width: 900px; margin: 4rem auto 3rem; text-align: center; padding: 0 1.5rem; }
-    .badge { display: inline-block; background: #e0f2fe; color: #0369a1; font-size: 0.85rem; font-weight: 600; padding: 0.35rem 0.85rem; border-radius: 9999px; margin-bottom: 1.5rem; }
+    .hero { max-width: 960px; margin: 3.5rem auto 2.5rem; text-align: center; padding: 0 1.5rem; }
+    .badge-container { display: flex; gap: 0.5rem; justify-content: center; flex-wrap: wrap; margin-bottom: 1.25rem; }
+    .badge { display: inline-block; background: #e0f2fe; color: #0369a1; font-size: 0.85rem; font-weight: 600; padding: 0.35rem 0.85rem; border-radius: 9999px; }
+    .badge-version { background: #dcfce7; color: #166534; }
     h1 { font-size: 2.75rem; font-weight: 800; color: var(--slate-900); line-height: 1.2; margin-bottom: 1.25rem; }
-    p.lead { font-size: 1.25rem; color: var(--slate-600); max-width: 760px; margin: 0 auto 2.5rem; }
-    .cta-buttons { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
+    p.lead { font-size: 1.25rem; color: var(--slate-600); max-width: 800px; margin: 0 auto 2.25rem; }
+    .cta-buttons { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; margin-bottom: 1.5rem; }
     .btn { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.85rem 1.75rem; border-radius: 8px; font-size: 1rem; font-weight: 600; text-decoration: none; transition: all 0.2s; }
-    .btn-primary { background: var(--primary); color: white; }
-    .btn-primary:hover { background: var(--primary-dark); }
+    .btn-primary { background: var(--primary); color: white; box-shadow: 0 4px 12px rgba(2, 132, 199, 0.25); }
+    .btn-primary:hover { background: var(--primary-dark); transform: translateY(-1px); }
     .btn-outline { background: white; color: var(--slate-700); border: 1px solid #cbd5e1; }
     .btn-outline:hover { background: var(--slate-100); }
-    .features { max-width: 1000px; margin: 3rem auto; padding: 0 1.5rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; }
-    .card { background: white; padding: 1.75rem; border-radius: 12px; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
-    .card h3 { font-size: 1.2rem; color: var(--slate-900); margin-bottom: 0.5rem; }
+    
+    .notice-box { max-width: 860px; margin: 2rem auto; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 12px; padding: 1.25rem 1.5rem; text-align: left; display: flex; gap: 1rem; align-items: flex-start; }
+    .notice-icon { font-size: 1.5rem; line-height: 1; }
+    .notice-text h4 { color: #166534; font-size: 1.05rem; margin-bottom: 0.25rem; }
+    .notice-text p { color: #14532d; font-size: 0.92rem; margin: 0; }
+
+    .section-title { text-align: center; max-width: 700px; margin: 4rem auto 2rem; padding: 0 1.5rem; }
+    .section-title h2 { font-size: 2rem; color: var(--slate-900); margin-bottom: 0.5rem; }
+    .section-title p { color: var(--slate-600); font-size: 1.05rem; }
+
+    .features { max-width: 1060px; margin: 0 auto; padding: 0 1.5rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); gap: 1.5rem; }
+    .card { background: white; padding: 1.75rem; border-radius: 12px; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(0,0,0,0.05); transition: transform 0.2s, box-shadow 0.2s; }
+    .card:hover { transform: translateY(-2px); box-shadow: 0 6px 16px rgba(0,0,0,0.08); }
+    .card h3 { font-size: 1.2rem; color: var(--slate-900); margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; }
     .card p { font-size: 0.95rem; color: var(--slate-600); }
+
+    .workflow-section { max-width: 1060px; margin: 4rem auto; padding: 2rem 1.5rem; background: white; border-radius: 16px; border: 1px solid #e2e8f0; box-shadow: 0 2px 8px rgba(0,0,0,0.04); }
+    .workflow-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.5rem; margin-top: 1.5rem; }
+    .workflow-step { padding: 1.25rem; border-radius: 8px; background: var(--slate-50); border: 1px solid #e2e8f0; }
+    .workflow-step .step-num { display: inline-block; width: 28px; height: 28px; border-radius: 50%; background: var(--primary); color: white; text-align: center; font-weight: bold; line-height: 28px; font-size: 0.85rem; margin-bottom: 0.75rem; }
+    .workflow-step h4 { font-size: 1rem; color: var(--slate-900); margin-bottom: 0.35rem; }
+    .workflow-step p { font-size: 0.88rem; color: var(--slate-600); }
+
     footer { background: var(--slate-900); color: #94a3b8; padding: 3rem 1.5rem; text-align: center; margin-top: 5rem; }
     footer a { color: #cbd5e1; text-decoration: none; margin: 0 0.75rem; }
     footer a:hover { color: white; }
@@ -52,53 +74,101 @@
       <span>Revit Drive Connector</span>
     </a>
     <nav>
-      <a href="#features">Features</a>
+      <a href="#features">Caratteristiche</a>
+      <a href="#sicurezza">Sicurezza Dati</a>
       <a href="https://github.com/FilippoAldrigo/revit-drive-connector/releases/latest">Download</a>
-      <a href="privacy.html">Privacy Policy</a>
-      <a href="terms.html">Terms of Service</a>
+      <a href="privacy.html">Privacy</a>
+      <a href="terms.html">Termini</a>
     </nav>
   </header>
 
   <section class="hero">
-    <div class="badge">Autodesk Revit 2025 • 2026 • 2027 Supported</div>
-    <h1>Cloud Worksharing for Autodesk Revit Powered by Google Drive</h1>
+    <div class="badge-container">
+      <div class="badge">Autodesk Revit 2025 • 2026 • 2027</div>
+      <div class="badge badge-version">v1.2.0 Safe Concurrency Release</div>
+    </div>
+    <h1>Cloud Worksharing per Autodesk Revit su Google Drive</h1>
     <p class="lead">
-      Enable seamless, multi-user BIM collaboration on shared Revit central models across distributed locations with robust mutual-exclusion locking and zero synchronization conflicts.
+      Collaborazione BIM multi-utente in tempo reale su modelli centrali condivisi. Massima integrità dei dati grazie al motore di blocco distribuito, algoritmo anti-conflitto e zero perdite di modifiche.
     </p>
     <div class="cta-buttons">
       <a href="https://github.com/FilippoAldrigo/revit-drive-connector/releases/latest" class="btn btn-primary">
-        Download Latest Release (.EXE)
+        Scarica Setup v1.2.0 (.EXE)
       </a>
       <a href="https://github.com/FilippoAldrigo/revit-drive-connector" class="btn btn-outline">
-        View on GitHub
+        Codice Sorgente su GitHub
       </a>
+    </div>
+
+    <div class="notice-box" id="sicurezza">
+      <div class="notice-icon">🛡️</div>
+      <div class="notice-text">
+        <h4>Protezione Concorrenza & Nessuna Perdita di Lavoro</h4>
+        <p>
+          Il nuovo motore v1.2.0 include la <strong>Pre-Commit Base Version & Cryptographic Hash Validation</strong>. Se due colleghi partono dalla stessa versione del modello centrale e tentano di sincronizzare in tempi diversi, il secondo utente non sovrascrive né cancella mai le modifiche del primo: il sistema rileva la discrepanza, impedisce l'upload distruttivo e guida il salvataggio sicuro del lavoro.
+        </p>
+      </div>
     </div>
   </section>
 
+  <div class="section-title">
+    <h2>Caratteristiche Principali</h2>
+    <p>Tecnologia avanzata pensata per studi di architettura e team di ingegneria distribuiti.</p>
+  </div>
+
   <section class="features" id="features">
     <div class="card">
-      <h3>🛡️ Gatekeeper Anti-Desync</h3>
-      <p>Distributed mutex locking engine guarantees safe synchronization with central models and prevents database corruption.</p>
+      <h3>🛡️ Gatekeeper Anti-Desync & Lock Atomico</h3>
+      <p>Algoritmo multi-claim deterministico con risoluzione collisioni al millisecondo. Solo un utente alla volta scrive sul modello centrale in cloud, prevenendo corruzioni del database Revit.</p>
     </div>
     <div class="card">
-      <h3>⚡ Local SSD Caching</h3>
-      <p>Lightning-fast model opening and saving. Models reside on fast local NVMe/SSD cache, eliminating cloud network latency.</p>
+      <h3>⚡ Cache SSD NVMe Ultra-Rapida</h3>
+      <p>I modelli locali risiedono nella cache locale (<code>C:\RevitDriveCache</code>). Aperture e salvataggi istantanei a velocità di bus locale, eliminando i rallentamenti delle unità virtuali cloud.</p>
     </div>
     <div class="card">
-      <h3>👥 One-Click Team Sharing</h3>
-      <p>Invite colleagues directly within the Revit UI using their Google email. Instant access via Google Drive API v3 permissions.</p>
+      <h3>👥 Condivisione Team con 1 Click</h3>
+      <p>Invita colleghi e collaboratori direttamente dall'interfaccia di Revit inserendo la loro email Google. Assegnazione permessi automatica tramite Google Drive API v3.</p>
     </div>
     <div class="card">
-      <h3>🔔 Real-Time Element Borrowing</h3>
-      <p>Live toast notifications alert owners when team members request element permissions. Approve or deny with a single click.</p>
+      <h3>🔔 Centro Prestiti (Element Borrowing) in Tempo Reale</h3>
+      <p>Notifiche toast istantanee per approvare o rifiutare le richieste di modifica elementi. Operazioni di borrow e relinquish protette da transazioni atomiche sul modello centrale.</p>
     </div>
     <div class="card">
-      <h3>🔗 External Links Auto-Healing</h3>
-      <p>CAD, IFC, and Revit linked documents are automatically organized with relative paths, preventing missing link errors.</p>
+      <h3>🔗 Auto-Healing dei Collegamenti Esterni (CAD, IFC, RVT)</h3>
+      <p>I collegamenti esterni vengono consolidati automaticamente con percorsi relativi nella cartella cloud condivisa, eliminando per sempre gli errori di "collegamento mancante".</p>
     </div>
     <div class="card">
-      <h3>🔒 Private & Secure</h3>
-      <p>Zero telemetry. OAuth tokens are encrypted locally on your device. We never inspect or store your BIM model data.</p>
+      <h3>🔒 Privacy Totale & Nessun Dato su Server Terzi</h3>
+      <p>Nessun intermediario: la comunicazione avviene esclusivamente tra il tuo computer e il tuo Google Drive. Token OAuth crittografati sul computer locale.</p>
+    </div>
+  </section>
+
+  <section class="workflow-section">
+    <div class="section-title" style="margin: 0 auto 1.5rem auto;">
+      <h2>Come Funziona la Collaborazione Sicura</h2>
+      <p>Il flusso coordinato che protegge ogni sincronizzazione</p>
+    </div>
+    <div class="workflow-grid">
+      <div class="workflow-step">
+        <span class="step-num">1</span>
+        <h4>Acquisizione Lock</h4>
+        <p>Quando clicchi <em>Sync with Drive</em>, il connector registra la richiesta e verifica che nessun altro stia sincronizzando contemporaneamente.</p>
+      </div>
+      <div class="workflow-step">
+        <span class="step-num">2</span>
+        <h4>Verifica Integrità Base</h4>
+        <p>Il sistema verifica che la versione e l'hash del file centrale corrispondano a quelli scaricati. Se un collega ha sincronizzato prima, il sistema blocca l'upload per evitare sovrascritture.</p>
+      </div>
+      <div class="workflow-step">
+        <span class="step-num">3</span>
+        <h4>Sincronizzazione Atomica</h4>
+        <p>Revit esegue il salvataggio dei delta e del modello centrale in isolamento completo, garantendo che le modifiche siano salvate in modo permanente.</p>
+      </div>
+      <div class="workflow-step">
+        <span class="step-num">4</span>
+        <h4>Rilascio & Notifica</h4>
+        <p>Il lock viene rilasciato e il catalogo cloud viene aggiornato con la nuova versione incrementata, pronta per gli altri membri del team.</p>
+      </div>
     </div>
   </section>
 
@@ -106,12 +176,12 @@
     <div class="footer-links">
       <a href="index.html">Home</a>
       <a href="privacy.html">Privacy Policy</a>
-      <a href="terms.html">Terms of Service</a>
+      <a href="terms.html">Termini di Servizio</a>
       <a href="https://github.com/FilippoAldrigo/revit-drive-connector">GitHub Repository</a>
     </div>
-    <p>© 2026 Filippo Aldrigo. All rights reserved.</p>
+    <p>© 2026 Filippo Aldrigo. Tutti i diritti riservati.</p>
     <p style="font-size: 0.85rem; margin-top: 0.5rem; color: #64748b;">
-      Autodesk and Revit are registered trademarks of Autodesk, Inc. Google and Google Drive are registered trademarks of Google LLC.
+      Autodesk e Revit sono marchi registrati di Autodesk, Inc. Google e Google Drive sono marchi registrati di Google LLC.
     </p>
   </footer>
 

@@ -13,6 +13,7 @@ namespace RevitDriveConnector.Core.IPC
  HeartbeatSyncLock,
  ReleaseSyncLock,
  UploadProjectChanges,
+ UploadProjectLinks,
  NotifyDocumentOpened,
  NotifyDocumentClosed,
  CreateCloudProject,

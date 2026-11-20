@@ -132,10 +132,16 @@ namespace RevitDriveConnector.Addin.UI
                 return;
             }
 
+            BtnGrant.IsEnabled = false;
+            BtnDeny.IsEnabled = false;
             try
             {
-                // 1. Rilascia effettivamente l'elemento in Revit e carica i permessi aggiornati sul Cloud
-                BorrowNotificationService.RelinquishAndGrantImmediate(_doc, selected, _username);
+                // 1. Acquisisce lock, allinea da Drive, rilascia effettivamente l'elemento e carica in sicurezza
+                if (!BorrowNotificationService.RelinquishAndGrantImmediate(_doc, selected, _username, out string err))
+                {
+                    MessageBox.Show($"Impossibile completare il rilascio sicuro su Google Drive:\n{err}", Loc.Tr("Common_Error"), MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
 
                 // 2. Aggiorna lo stato della richiesta su Google Drive
                 var payload = JsonSerializer.Serialize(new
@@ -162,6 +168,11 @@ namespace RevitDriveConnector.Addin.UI
             {
                 MessageBox.Show($"{Loc.Tr("Common_Error")}: {ex.Message}", Loc.Tr("Common_Error"), MessageBoxButton.OK, MessageBoxImage.Error);
             }
+            finally
+            {
+                BtnGrant.IsEnabled = true;
+                BtnDeny.IsEnabled = true;
+            }
         }
 
         private async void BtnDeny_Click(object sender, RoutedEventArgs e)
@@ -169,6 +180,8 @@ namespace RevitDriveConnector.Addin.UI
             var selected = LvIncoming.SelectedItem as BorrowRequest;
             if (selected == null) return;
 
+            BtnGrant.IsEnabled = false;
+            BtnDeny.IsEnabled = false;
             try
             {
                 var payload = JsonSerializer.Serialize(new
@@ -188,6 +201,11 @@ namespace RevitDriveConnector.Addin.UI
                 await LoadRequestsAsync();
             }
             catch { }
+            finally
+            {
+                BtnGrant.IsEnabled = true;
+                BtnDeny.IsEnabled = true;
+            }
         }
 
         private async void BtnCheckoutApproved_Click(object sender, RoutedEventArgs e)
@@ -199,26 +217,37 @@ namespace RevitDriveConnector.Addin.UI
                 return;
             }
 
+            BtnCheckout.IsEnabled = false;
             try
             {
-                // 1. Allinea prima il Modello Centrale dalla versione aggiornata su Google Drive
-                SynchronizationCoordinator.AlignCentralFromCloudSync(_doc);
-                try
+                // 1. Acquisisce lock, allinea da Drive, ricarica e prende in carico gli elementi approvati
+                var requestedIds = approved.Select(a => new ElementId(a.ElementId)).ToList();
+                int checkedOutCount = 0;
+                bool ok = SynchronizationCoordinator.ExecuteLockedCentralOperation(_doc, () =>
                 {
-                    _doc.ReloadLatest(new ReloadLatestOptions());
-                }
-                catch { }
+                    var validIds = requestedIds.Where(id => _doc.GetElement(id) != null).ToList();
+                    if (validIds.Count == 0)
+                    {
+                        return false;
+                    }
 
-                // 2. Prendi in carico gli elementi approvati
-                var elemIds = approved.Select(a => new ElementId(a.ElementId)).ToList();
-                using (var trans = new Transaction(_doc, "Checkout approved elements"))
+                    using (var trans = new Transaction(_doc, "Checkout approved elements"))
+                    {
+                        trans.Start();
+                        WorksharingUtils.CheckoutElements(_doc, validIds);
+                        trans.Commit();
+                    }
+                    checkedOutCount = validIds.Count;
+                    return true;
+                }, out string err);
+
+                if (!ok)
                 {
-                    trans.Start();
-                    WorksharingUtils.CheckoutElements(_doc, elemIds);
-                    trans.Commit();
+                    MessageBox.Show($"Impossibile completare la presa in carico sicura:\n{err}", Loc.Tr("Common_Error"), MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
                 }
 
-                // 3. Segna le richieste come completate
+                // 2. Segna le richieste come completate
                 string completedIds = string.Join(",", approved.Select(a => a.RequestId));
                 await _ipcClient.SendRequestAsync(new IpcRequest
                 {
@@ -231,15 +260,19 @@ namespace RevitDriveConnector.Addin.UI
                 });
 
                 await LoadRequestsAsync();
-                MessageBox.Show(Loc.Format("Borrow_CheckoutSuccess", elemIds.Count), Loc.Tr("Ribbon_TabName"), MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show(Loc.Format("Borrow_CheckoutSuccess", checkedOutCount), Loc.Tr("Ribbon_TabName"), MessageBoxButton.OK, MessageBoxImage.Information);
             }
             catch (Exception ex)
             {
                 MessageBox.Show($"{Loc.Tr("Common_Error")}: {ex.Message}", Loc.Tr("Common_Error"), MessageBoxButton.OK, MessageBoxImage.Error);
             }
+            finally
+            {
+                BtnCheckout.IsEnabled = true;
+            }
         }
 
-        private async void BtnRelinquishAll_Click(object sender, RoutedEventArgs e)
+        private void BtnRelinquishAll_Click(object sender, RoutedEventArgs e)
         {
             var res = MessageBox.Show(Loc.Tr("Borrow_ConfirmRelinquish"),
                 Loc.Tr("Borrow_BtnRelinquish"), MessageBoxButton.YesNo, MessageBoxImage.Question);
@@ -249,35 +282,30 @@ namespace RevitDriveConnector.Addin.UI
             BtnRelinquish.IsEnabled = false;
             try
             {
-                var relOptions = new RelinquishOptions(true)
+                bool ok = SynchronizationCoordinator.ExecuteLockedCentralOperation(_doc, () =>
                 {
-                    StandardWorksets = true,
-                    ViewWorksets = true,
-                    FamilyWorksets = true,
-                    UserWorksets = true,
-                    CheckedOutElements = true
-                };
-
-                var transactOptions = new TransactWithCentralOptions();
-                WorksharingUtils.RelinquishOwnership(_doc, relOptions, transactOptions);
-
-                string centralPath = SynchronizationCoordinator.GetCentralModelPath(_doc);
-                if (!string.IsNullOrEmpty(centralPath))
-                {
-                    await _ipcClient.SendRequestAsync(new IpcRequest
+                    var relOptions = new RelinquishOptions(true)
                     {
-                        Command = IpcCommand.UploadProjectChanges,
-                        PayloadJson = JsonSerializer.Serialize(new
-                        {
-                            ProjectId = _projectId,
-                            CentralPath = centralPath,
-                            LockToken = "",
-                            User = _username
-                        })
-                    }, timeoutMs: 180000);
-                }
+                        StandardWorksets = true,
+                        ViewWorksets = true,
+                        FamilyWorksets = true,
+                        UserWorksets = true,
+                        CheckedOutElements = true
+                    };
 
-                MessageBox.Show(Loc.Tr("Borrow_RelinquishSuccess"), Loc.Tr("Ribbon_TabName"), MessageBoxButton.OK, MessageBoxImage.Information);
+                    var transactOptions = new TransactWithCentralOptions();
+                    WorksharingUtils.RelinquishOwnership(_doc, relOptions, transactOptions);
+                    return true;
+                }, out string err);
+
+                if (ok)
+                {
+                    MessageBox.Show(Loc.Tr("Borrow_RelinquishSuccess"), Loc.Tr("Ribbon_TabName"), MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                else
+                {
+                    MessageBox.Show($"Impossibile rilasciare e sincronizzare in sicurezza su Google Drive:\n{err}", Loc.Tr("Common_Error"), MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
             }
             catch (Exception ex)
             {

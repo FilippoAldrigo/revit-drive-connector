@@ -6,6 +6,7 @@
 [![Language](https://img.shields.io/badge/Language-English%20%7C%20Italiano-informational.svg)]()
 [![License: Proprietary Free-to-Use](https://img.shields.io/badge/License-Proprietary%20%7C%20Free%20to%20Use-success.svg)](LICENSE)
 [![Google Drive](https://img.shields.io/badge/Cloud-Google%20Drive%20v3-4285F4.svg)](https://www.google.com/drive/)
+[![Version](https://img.shields.io/badge/Release-v1.2.0-brightgreen.svg)](https://github.com/FilippoAldrigo/revit-drive-connector/releases)
 
 **Google Drive Connector** is a **Cloud Worksharing and Multi-User Collaboration solution for Autodesk Revit (versions 2025, 2026, and 2027)** powered by Google Drive.
 
@@ -28,6 +29,8 @@ Standard cloud storage services (Google Drive Desktop, Dropbox, OneDrive) cannot
 
 **Google Drive Connector** solves this through a distributed **Gatekeeper Anti-Desync Architecture** featuring:
 - **Mutual Exclusion Distributed Locking:** Guarantees that only one user synchronizes with central (`STC`) at any given millisecond.
+- **Atomic Base Version & Cryptographic Hash Guard:** Prevents simultaneous upload collisions. If two users start from the same base and synchronize sequentially, the second user cannot overwrite the first user's central changes without safe reconciliation.
+- **Deterministic Multi-Claim Tie-Breaker:** Resolves sub-second race conditions if multiple users trigger synchronization at the exact same millisecond.
 - **SHA-256 Checksum Delta Verification:** Prevents race conditions by verifying cloud deltas before Revit commits changes.
 - **High-Speed Local SSD Caching (`C:\RevitDriveCache`):** Revit operates directly on local SSD speed, eliminating cloud lag and file locks during normal drafting and 3D navigation.
 - **Clock Skew Protection:** Built-in NTP/UTC time reconciliation protects teams working across different timezones or out-of-sync system clocks.

@@ -115,6 +115,11 @@ namespace RevitDriveConnector.Core.Models
         [JsonPropertyName("lastModifiedUtc")]
         public DateTime LastModifiedUtc { get; set; }
 
+        [JsonIgnore]
+        public DateTime LastModifiedLocal => LastModifiedUtc.Kind == DateTimeKind.Utc
+            ? LastModifiedUtc.ToLocalTime()
+            : DateTime.SpecifyKind(LastModifiedUtc, DateTimeKind.Utc).ToLocalTime();
+
         [JsonPropertyName("lastModifiedBy")]
         public string LastModifiedBy { get; set; } = string.Empty;
 
@@ -174,6 +179,9 @@ namespace RevitDriveConnector.Core.Models
 
         [JsonPropertyName("isWaitingForDownload")]
         public bool IsWaitingForDownload { get; set; }
+
+        [JsonPropertyName("wasUpdatedFromCloud")]
+        public bool WasUpdatedFromCloud { get; set; }
 
         [JsonPropertyName("lastSyncUser")]
         public string LastSyncUser { get; set; } = string.Empty;

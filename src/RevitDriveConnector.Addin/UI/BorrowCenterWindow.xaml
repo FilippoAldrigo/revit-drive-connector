@@ -38,7 +38,7 @@
  <GridViewColumn x:Name="ColIncColleague" Header="Collega" Width="130" DisplayMemberBinding="{Binding RequesterUser}" />
  <GridViewColumn x:Name="ColIncElement" Header="Elemento Richiesto" Width="320" DisplayMemberBinding="{Binding ElementName}" />
  <GridViewColumn x:Name="ColIncMachine" Header="Computer" Width="120" DisplayMemberBinding="{Binding RequesterMachine}" />
- <GridViewColumn x:Name="ColIncDate" Header="Data" Width="140" DisplayMemberBinding="{Binding CreatedAtUtc, StringFormat='{}{0:dd/MM HH:mm}'}" />
+ <GridViewColumn x:Name="ColIncDate" Header="Data" Width="140" DisplayMemberBinding="{Binding CreatedAtLocal, StringFormat='{}{0:dd/MM HH:mm}'}" />
  </GridView>
  </ListView.View>
  </ListView>
@@ -64,7 +64,7 @@
  <GridViewColumn x:Name="ColOutOwner" Header="Proprietario Attuale" Width="150" DisplayMemberBinding="{Binding OwnerUser}" />
  <GridViewColumn x:Name="ColOutElement" Header="Elemento" Width="340" DisplayMemberBinding="{Binding ElementName}" />
  <GridViewColumn x:Name="ColOutStatus" Header="Stato Richiesta" Width="130" DisplayMemberBinding="{Binding Status}" />
- <GridViewColumn x:Name="ColOutDate" Header="Data" Width="110" DisplayMemberBinding="{Binding CreatedAtUtc, StringFormat='{}{0:dd/MM HH:mm}'}" />
+ <GridViewColumn x:Name="ColOutDate" Header="Data" Width="110" DisplayMemberBinding="{Binding CreatedAtLocal, StringFormat='{}{0:dd/MM HH:mm}'}" />
  </GridView>
  </ListView.View>
  </ListView>

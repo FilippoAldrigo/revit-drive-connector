@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using RevitDriveConnector.Core.Models;
@@ -38,29 +40,86 @@ namespace RevitDriveConnector.Core.Utils
         private static readonly object _fileLockSync = new();
         public const int DefaultSkewToleranceSeconds = 15;
 
+        public static string GetLockFilePath(string cloudProjectDir, string? lockToken = null)
+        {
+            string connectorDir = Path.Combine(cloudProjectDir, ".connector");
+            if (!string.IsNullOrWhiteSpace(lockToken))
+            {
+                return Path.Combine(connectorDir, $"sync_lock_{lockToken}.json");
+            }
+            return Path.Combine(connectorDir, "sync_lock.json");
+        }
+
+        private static List<(string path, FileLockData data)> LoadLockFilesInternal(string connectorDir, DateTime now)
+        {
+            var active = new List<(string path, FileLockData data)>();
+            if (!Directory.Exists(connectorDir)) return active;
+
+            var candidates = new List<string>();
+            string primary = Path.Combine(connectorDir, "sync_lock.json");
+            if (File.Exists(primary)) candidates.Add(primary);
+            candidates.AddRange(Directory.GetFiles(connectorDir, "sync_lock_*.json"));
+
+            foreach (var file in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    string json = File.ReadAllText(file);
+                    var data = JsonSerializer.Deserialize<FileLockData>(json);
+                    if (data == null) continue;
+
+                    int tolerance = data.SkewToleranceSeconds > 0 ? data.SkewToleranceSeconds : DefaultSkewToleranceSeconds;
+                    if (data.ExpiresAtUtc.AddSeconds(tolerance) > now)
+                    {
+                        active.Add((file, data));
+                    }
+                    else
+                    {
+                        try { File.Delete(file); } catch { }
+                    }
+                }
+                catch { }
+            }
+
+            return active;
+        }
+
         public static FileLockData? GetActiveLock(string cloudProjectDir)
         {
             lock (_fileLockSync)
             {
                 try
                 {
-                    string lockFilePath = Path.Combine(cloudProjectDir, ".connector", "sync_lock.json");
-                    if (!File.Exists(lockFilePath)) return null;
-
-                    string json = File.ReadAllText(lockFilePath);
-                    var currentLock = JsonSerializer.Deserialize<FileLockData>(json);
-                    if (currentLock == null) return null;
-
+                    string connectorDir = Path.Combine(cloudProjectDir, ".connector");
                     var now = NetworkTimeHelper.GetAccurateUtc();
-                    int tolerance = currentLock.SkewToleranceSeconds > 0 ? currentLock.SkewToleranceSeconds : DefaultSkewToleranceSeconds;
-                    if (currentLock.ExpiresAtUtc.AddSeconds(tolerance) > now)
-                    {
-                        return currentLock;
-                    }
+                    var active = LoadLockFilesInternal(connectorDir, now);
+                    if (active.Count == 0) return null;
+
+                    return active
+                        .OrderBy(x => Path.GetFileName(x.path).Equals("sync_lock.json", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+                        .ThenBy(x => x.data.AcquiredAtUtc)
+                        .First()
+                        .data;
                 }
                 catch { }
 
                 return null;
+            }
+        }
+
+        public static void SaveLocalLockSnapshot(string cloudProjectDir, FileLockData lockData)
+        {
+            lock (_fileLockSync)
+            {
+                try
+                {
+                    string connectorDir = Path.Combine(cloudProjectDir, ".connector");
+                    Directory.CreateDirectory(connectorDir);
+                    var now = NetworkTimeHelper.GetAccurateUtc();
+                    LoadLockFilesInternal(connectorDir, now);
+                    WriteLockAtomic(GetLockFilePath(cloudProjectDir, lockData.LockToken), lockData);
+                }
+                catch { }
             }
         }
 
@@ -75,71 +134,53 @@ namespace RevitDriveConnector.Core.Utils
                     string lockFilePath = Path.Combine(connectorDir, "sync_lock.json");
 
                     var now = NetworkTimeHelper.GetAccurateUtc();
+                    var activeLocks = LoadLockFilesInternal(connectorDir, now);
 
-                    if (File.Exists(lockFilePath))
+                    var otherLock = activeLocks
+                        .Select(x => x.data)
+                        .FirstOrDefault(l =>
+                            !(l.User.Equals(user, StringComparison.OrdinalIgnoreCase) &&
+                              l.Machine.Equals(machine, StringComparison.OrdinalIgnoreCase)) &&
+                            !(l.AcquiredAtUtc > now.AddSeconds(60)));
+
+                    if (otherLock != null)
                     {
-                        try
+                        int tolerance = otherLock.SkewToleranceSeconds > 0 ? otherLock.SkewToleranceSeconds : DefaultSkewToleranceSeconds;
+                        int remainingSeconds = Math.Max(1, (int)(otherLock.ExpiresAtUtc.AddSeconds(tolerance) - now).TotalSeconds);
+                        return new LockResponse
                         {
-                            string json = File.ReadAllText(lockFilePath);
-                            var currentLock = JsonSerializer.Deserialize<FileLockData>(json);
-
-                            if (currentLock != null)
-                            {
-                                int tolerance = currentLock.SkewToleranceSeconds > 0 ? currentLock.SkewToleranceSeconds : DefaultSkewToleranceSeconds;
-                                DateTime expirationWithTolerance = currentLock.ExpiresAtUtc.AddSeconds(tolerance);
-
-                                if (expirationWithTolerance > now)
-                                {
-                                    // Stesso utente e stessa macchina: prolunga il lock esistente
-                                    if (currentLock.User.Equals(user, StringComparison.OrdinalIgnoreCase) &&
-                                        currentLock.Machine.Equals(machine, StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        currentLock.ExpiresAtUtc = now.AddSeconds(timeoutSeconds);
-                                        currentLock.DurationSeconds = timeoutSeconds;
-                                        WriteLockAtomic(lockFilePath, currentLock);
-
-                                        return new LockResponse
-                                        {
-                                            Status = SyncLockStatus.LockAcquired,
-                                            LockToken = currentLock.LockToken,
-                                            CurrentHolder = currentLock.User,
-                                            CurrentHolderMachine = currentLock.Machine,
-                                            AcquiredAtUtc = currentLock.AcquiredAtUtc,
-                                            ExpiresAtUtc = currentLock.ExpiresAtUtc,
-                                            Message = "Lock Google Drive prolungato con successo."
-                                        };
-                                    }
-
-                                    // Protezione contro orologi eccessivamente avanti nel futuro (> 60s)
-                                    if (currentLock.AcquiredAtUtc > now.AddSeconds(60))
-                                    {
-                                        DateTime fileWriteUtc = File.GetLastWriteTimeUtc(lockFilePath);
-                                        if (now > fileWriteUtc.AddSeconds(timeoutSeconds + tolerance))
-                                        {
-                                            goto CreateNew;
-                                        }
-                                    }
-
-                                    int remainingSeconds = Math.Max(1, (int)(expirationWithTolerance - now).TotalSeconds);
-                                    return new LockResponse
-                                    {
-                                        Status = SyncLockStatus.LockDeniedBusy,
-                                        LockToken = null,
-                                        CurrentHolder = currentLock.User,
-                                        CurrentHolderMachine = currentLock.Machine,
-                                        AcquiredAtUtc = currentLock.AcquiredAtUtc,
-                                        ExpiresAtUtc = currentLock.ExpiresAtUtc,
-                                        Message = $"Il progetto è in fase di sincronizzazione su Google Drive da {currentLock.User} ({currentLock.Machine}). Riprova tra circa {remainingSeconds}s."
-                                    };
-                                }
-                            }
-                        }
-                        catch
-                        {
-                        }
+                            Status = SyncLockStatus.LockDeniedBusy,
+                            LockToken = null,
+                            CurrentHolder = otherLock.User,
+                            CurrentHolderMachine = otherLock.Machine,
+                            AcquiredAtUtc = otherLock.AcquiredAtUtc,
+                            ExpiresAtUtc = otherLock.ExpiresAtUtc,
+                            Message = $"Il progetto è in fase di sincronizzazione su Google Drive da {otherLock.User} ({otherLock.Machine}). Riprova tra circa {remainingSeconds}s."
+                        };
                     }
 
-                CreateNew:
+                    var ownLock = activeLocks.FirstOrDefault(x =>
+                        x.data.User.Equals(user, StringComparison.OrdinalIgnoreCase) &&
+                        x.data.Machine.Equals(machine, StringComparison.OrdinalIgnoreCase));
+
+                    if (ownLock.data != null)
+                    {
+                        ownLock.data.ExpiresAtUtc = now.AddSeconds(timeoutSeconds);
+                        ownLock.data.DurationSeconds = timeoutSeconds;
+                        WriteLockAtomic(ownLock.path, ownLock.data);
+
+                        return new LockResponse
+                        {
+                            Status = SyncLockStatus.LockAcquired,
+                            LockToken = ownLock.data.LockToken,
+                            CurrentHolder = ownLock.data.User,
+                            CurrentHolderMachine = ownLock.data.Machine,
+                            AcquiredAtUtc = ownLock.data.AcquiredAtUtc,
+                            ExpiresAtUtc = ownLock.data.ExpiresAtUtc,
+                            Message = "Lock Google Drive prolungato con successo."
+                        };
+                    }
+
                     var newLock = new FileLockData
                     {
                         ProjectId = projectId,
@@ -182,31 +223,48 @@ namespace RevitDriveConnector.Core.Utils
             {
                 try
                 {
-                    string lockFilePath = Path.Combine(cloudProjectDir, ".connector", "sync_lock.json");
-                    if (!File.Exists(lockFilePath)) return true;
+                    string connectorDir = Path.Combine(cloudProjectDir, ".connector");
+                    if (!Directory.Exists(connectorDir)) return true;
 
-                    try
+                    var now = NetworkTimeHelper.GetAccurateUtc();
+                    var candidates = new List<string>();
+                    string primary = Path.Combine(connectorDir, "sync_lock.json");
+                    if (File.Exists(primary)) candidates.Add(primary);
+                    candidates.AddRange(Directory.GetFiles(connectorDir, "sync_lock_*.json"));
+
+                    bool anyRemainingOwnedByOther = false;
+                    foreach (var file in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
                     {
-                        string json = File.ReadAllText(lockFilePath);
-                        var currentLock = JsonSerializer.Deserialize<FileLockData>(json);
-                        var now = NetworkTimeHelper.GetAccurateUtc();
-
-                        if (currentLock == null ||
-                            currentLock.LockToken == lockToken ||
-                            currentLock.User.Equals(user, StringComparison.OrdinalIgnoreCase) ||
-                            currentLock.ExpiresAtUtc.AddSeconds(DefaultSkewToleranceSeconds) <= now)
+                        try
                         {
-                            File.Delete(lockFilePath);
-                            return true;
+                            string json = File.ReadAllText(file);
+                            var currentLock = JsonSerializer.Deserialize<FileLockData>(json);
+                            int tolerance = currentLock?.SkewToleranceSeconds > 0 ? currentLock.SkewToleranceSeconds : DefaultSkewToleranceSeconds;
+
+                            bool matchesToken = !string.IsNullOrWhiteSpace(lockToken) &&
+                                                currentLock != null &&
+                                                string.Equals(currentLock.LockToken, lockToken, StringComparison.OrdinalIgnoreCase);
+                            bool matchesUserWithoutToken = string.IsNullOrWhiteSpace(lockToken) &&
+                                                           currentLock != null &&
+                                                           currentLock.User.Equals(user, StringComparison.OrdinalIgnoreCase);
+                            bool isExpired = currentLock == null || currentLock.ExpiresAtUtc.AddSeconds(tolerance) <= now;
+
+                            if (matchesToken || matchesUserWithoutToken || isExpired)
+                            {
+                                File.Delete(file);
+                            }
+                            else
+                            {
+                                anyRemainingOwnedByOther = true;
+                            }
+                        }
+                        catch
+                        {
+                            try { File.Delete(file); } catch { }
                         }
                     }
-                    catch
-                    {
-                        File.Delete(lockFilePath);
-                        return true;
-                    }
 
-                    return false;
+                    return !anyRemainingOwnedByOther;
                 }
                 catch
                 {
@@ -221,19 +279,36 @@ namespace RevitDriveConnector.Core.Utils
             {
                 try
                 {
-                    string lockFilePath = Path.Combine(cloudProjectDir, ".connector", "sync_lock.json");
-                    if (!File.Exists(lockFilePath)) return false;
+                    string connectorDir = Path.Combine(cloudProjectDir, ".connector");
+                    if (!Directory.Exists(connectorDir)) return false;
 
-                    string json = File.ReadAllText(lockFilePath);
-                    var currentLock = JsonSerializer.Deserialize<FileLockData>(json);
-
-                    if (currentLock != null &&
-                        (currentLock.LockToken == lockToken || currentLock.User.Equals(user, StringComparison.OrdinalIgnoreCase)))
+                    var candidates = new List<string>();
+                    if (!string.IsNullOrWhiteSpace(lockToken))
                     {
-                        var now = NetworkTimeHelper.GetAccurateUtc();
-                        currentLock.ExpiresAtUtc = now.AddSeconds(extendSeconds);
-                        WriteLockAtomic(lockFilePath, currentLock);
-                        return true;
+                        string tokenFile = GetLockFilePath(cloudProjectDir, lockToken);
+                        if (File.Exists(tokenFile)) candidates.Add(tokenFile);
+                    }
+                    string primary = Path.Combine(connectorDir, "sync_lock.json");
+                    if (File.Exists(primary)) candidates.Add(primary);
+
+                    foreach (var lockFilePath in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
+                    {
+                        string json = File.ReadAllText(lockFilePath);
+                        var currentLock = JsonSerializer.Deserialize<FileLockData>(json);
+                        if (currentLock == null) continue;
+
+                        bool tokenMatches = !string.IsNullOrWhiteSpace(lockToken) &&
+                                            string.Equals(currentLock.LockToken, lockToken, StringComparison.OrdinalIgnoreCase);
+                        bool userMatchesFallback = string.IsNullOrWhiteSpace(lockToken) &&
+                                                   currentLock.User.Equals(user, StringComparison.OrdinalIgnoreCase);
+
+                        if (tokenMatches || userMatchesFallback)
+                        {
+                            var now = NetworkTimeHelper.GetAccurateUtc();
+                            currentLock.ExpiresAtUtc = now.AddSeconds(extendSeconds);
+                            WriteLockAtomic(lockFilePath, currentLock);
+                            return true;
+                        }
                     }
 
                     return false;
@@ -251,10 +326,15 @@ namespace RevitDriveConnector.Core.Utils
             {
                 try
                 {
-                    string lockFilePath = Path.Combine(cloudProjectDir, ".connector", "sync_lock.json");
-                    if (File.Exists(lockFilePath))
+                    string connectorDir = Path.Combine(cloudProjectDir, ".connector");
+                    if (!Directory.Exists(connectorDir)) return true;
+
+                    string primary = Path.Combine(connectorDir, "sync_lock.json");
+                    if (File.Exists(primary)) File.Delete(primary);
+
+                    foreach (var file in Directory.GetFiles(connectorDir, "sync_lock_*.json"))
                     {
-                        File.Delete(lockFilePath);
+                        File.Delete(file);
                     }
                     return true;
                 }

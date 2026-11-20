@@ -240,6 +240,7 @@ namespace RevitDriveConnector.Addin.UI
                     {
                         ProjectId = SelectedProject.Id,
                         ProjectName = SelectedProject.Name,
+                        CloudFolderId = SelectedProject.CloudFolderId,
                         User = _uiapp.Application.Username
                     };
 
@@ -302,42 +303,125 @@ namespace RevitDriveConnector.Addin.UI
                     if (!centralInfo.IsWorkshared)
                     {
                         TxtStatus.Text = Loc.Tr("Gatekeeper_Subtitle");
-                        var openOpts = new OpenOptions();
-                        var tempDoc = _uiapp.Application.OpenDocumentFile(centralModelPath, openOpts);
-                        if (!tempDoc.IsWorkshared)
+                        var lockIpcResp = await _ipcClient.SendRequestAsync(new IpcRequest
                         {
-                            tempDoc.EnableWorksharing("Shared Levels and Grids", "Workset1");
-                        }
-                        var saveOpts = new SaveAsOptions { OverwriteExistingFile = true };
-                        var wsOpts = new WorksharingSaveAsOptions { SaveAsCentral = true };
-                        saveOpts.SetWorksharingOptions(wsOpts);
-                        tempDoc.SaveAs(centralPath, saveOpts);
-                        try
-                        {
-                            var relOpts = new RelinquishOptions(true)
-                            {
-                                StandardWorksets = true,
-                                ViewWorksets = true,
-                                FamilyWorksets = true,
-                                UserWorksets = true,
-                                CheckedOutElements = true
-                            };
-                            WorksharingUtils.RelinquishOwnership(tempDoc, relOpts, new TransactWithCentralOptions());
-                        }
-                        catch { }
-                        tempDoc.Close(false);
-
-                        await _ipcClient.SendRequestAsync(new IpcRequest
-                        {
-                            Command = IpcCommand.UploadProjectChanges,
-                            PayloadJson = JsonSerializer.Serialize(new
+                            Command = IpcCommand.AcquireSyncLock,
+                            PayloadJson = JsonSerializer.Serialize(new LockRequest
                             {
                                 ProjectId = SelectedProject.Name,
-                                CentralPath = centralPath,
-                                LockToken = "",
-                                User = username
+                                User = username,
+                                Machine = Environment.MachineName,
+                                TimeoutSeconds = 90
                             })
-                        }, timeoutMs: 180000);
+                        }, timeoutMs: 25000);
+
+                        var lockResp = lockIpcResp.Success && !string.IsNullOrEmpty(lockIpcResp.DataJson)
+                            ? JsonSerializer.Deserialize<LockResponse>(lockIpcResp.DataJson)
+                            : null;
+
+                        if (lockResp == null || lockResp.Status != SyncLockStatus.LockAcquired || string.IsNullOrEmpty(lockResp.LockToken))
+                        {
+                            TxtStatus.Text = lockResp?.Message ?? lockIpcResp.ErrorMessage ?? "Progetto occupato da un collega durante l'inizializzazione.";
+                            BtnOpen.IsEnabled = true;
+                            return;
+                        }
+
+                        string lockToken = lockResp.LockToken;
+                        bool lockReleasedByUpload = false;
+                        try
+                        {
+                            var verifyResp = await _ipcClient.SendRequestAsync(new IpcRequest
+                            {
+                                Command = IpcCommand.VerifySyncIntegrity,
+                                PayloadJson = JsonSerializer.Serialize(new
+                                {
+                                    ProjectId = SelectedProject.Name,
+                                    User = username
+                                })
+                            }, timeoutMs: 180000);
+
+                            var integrity = verifyResp.Success && !string.IsNullOrEmpty(verifyResp.DataJson)
+                                ? JsonSerializer.Deserialize<SyncIntegrityResult>(verifyResp.DataJson)
+                                : null;
+
+                            if (integrity == null || !integrity.IsAligned)
+                            {
+                                TxtStatus.Text = integrity?.Message ?? verifyResp.ErrorMessage ?? "Impossibile allineare il progetto da Google Drive.";
+                                BtnOpen.IsEnabled = true;
+                                return;
+                            }
+
+                            centralInfo = BasicFileInfo.Extract(centralPath);
+                            if (!centralInfo.IsWorkshared)
+                            {
+                                var openOpts = new OpenOptions();
+                                var tempDoc = _uiapp.Application.OpenDocumentFile(centralModelPath, openOpts);
+                                if (!tempDoc.IsWorkshared)
+                                {
+                                    tempDoc.EnableWorksharing("Shared Levels and Grids", "Workset1");
+                                }
+                                var saveOpts = new SaveAsOptions { OverwriteExistingFile = true };
+                                var wsOpts = new WorksharingSaveAsOptions { SaveAsCentral = true };
+                                saveOpts.SetWorksharingOptions(wsOpts);
+                                tempDoc.SaveAs(centralPath, saveOpts);
+                                try
+                                {
+                                    var relOpts = new RelinquishOptions(true)
+                                    {
+                                        StandardWorksets = true,
+                                        ViewWorksets = true,
+                                        FamilyWorksets = true,
+                                        UserWorksets = true,
+                                        CheckedOutElements = true
+                                    };
+                                    WorksharingUtils.RelinquishOwnership(tempDoc, relOpts, new TransactWithCentralOptions());
+                                }
+                                catch { }
+                                tempDoc.Close(false);
+
+                                var uploadResp = await _ipcClient.SendRequestAsync(new IpcRequest
+                                {
+                                    Command = IpcCommand.UploadProjectChanges,
+                                    PayloadJson = JsonSerializer.Serialize(new
+                                    {
+                                        ProjectId = SelectedProject.Name,
+                                        CentralPath = centralPath,
+                                        LockToken = lockToken,
+                                        User = username,
+                                        ExpectedBaseVersion = integrity.CloudVersion,
+                                        ExpectedBaseHash = integrity.ExpectedHash
+                                    })
+                                }, timeoutMs: 180000);
+                                lockReleasedByUpload = true;
+
+                                if (!uploadResp.Success)
+                                {
+                                    TxtStatus.Text = uploadResp.ErrorMessage ?? "Errore durante il caricamento del modello centrale abilitato al Worksharing.";
+                                    BtnOpen.IsEnabled = true;
+                                    return;
+                                }
+                            }
+                        }
+                        finally
+                        {
+                            if (!lockReleasedByUpload)
+                            {
+                                try
+                                {
+                                    await _ipcClient.SendRequestAsync(new IpcRequest
+                                    {
+                                        Command = IpcCommand.ReleaseSyncLock,
+                                        PayloadJson = JsonSerializer.Serialize(new
+                                        {
+                                            ProjectId = SelectedProject.Name,
+                                            LockToken = lockToken,
+                                            User = username
+                                        })
+                                    }, timeoutMs: 10000);
+                                }
+                                catch { }
+                            }
+                        }
                     }
                 }
                 catch (Exception ex)
@@ -403,10 +487,22 @@ namespace RevitDriveConnector.Addin.UI
                         var openedDoc = _uiapp.ActiveUIDocument?.Document;
                         if (openedDoc != null && openedDoc.IsWorkshared)
                         {
+                            SynchronizationCoordinator.SuppressNextReloadAlignment = true;
                             openedDoc.ReloadLatest(new Autodesk.Revit.DB.ReloadLatestOptions());
                         }
                     }
-                    catch { }
+                    catch (Exception reloadEx)
+                    {
+                        MessageBox.Show(
+                            $"{Loc.Tr("Open_LocalIncompatibleNotice")}\n\nDettaglio: {reloadEx.Message}",
+                            Loc.Tr("Ribbon_TabName"),
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Warning);
+                    }
+                    finally
+                    {
+                        SynchronizationCoordinator.SuppressNextReloadAlignment = false;
+                    }
                 }
             }
             catch (Exception ex)

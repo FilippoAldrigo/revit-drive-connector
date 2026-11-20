@@ -102,7 +102,9 @@ namespace RevitDriveConnector.Server.Services
  {
  if (_activeLocks.TryGetValue(projectId, out var current))
  {
- if (current.LockToken == lockToken || current.User.Equals(user, StringComparison.OrdinalIgnoreCase))
+ bool matchesToken = !string.IsNullOrWhiteSpace(lockToken) && current.LockToken == lockToken;
+ bool matchesUserNoToken = string.IsNullOrWhiteSpace(lockToken) && current.User.Equals(user, StringComparison.OrdinalIgnoreCase);
+ if (matchesToken || matchesUserNoToken)
  {
  _activeLocks.TryRemove(projectId, out _);
  OnLockStateChanged?.Invoke(projectId, null);

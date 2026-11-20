@@ -34,11 +34,17 @@ namespace RevitDriveConnector.Addin.Services
  int scanIndex = recentSectionIndex + 1;
  var linesToRemove = new List<int>();
 
- string projectName = Path.GetFileNameWithoutExtension(localFilePath);
- // Rimuoviamo eventuali suffissi per fare match pulito
- if (projectName.Contains("_"))
+ string projectName = string.Empty;
+ try
  {
- projectName = projectName.Substring(0, projectName.IndexOf('_'));
+ var localDir = Path.GetDirectoryName(localFilePath);
+ var projDir = localDir != null ? Path.GetDirectoryName(localDir) : null;
+ if (projDir != null) projectName = Path.GetFileName(projDir);
+ }
+ catch { }
+ if (string.IsNullOrEmpty(projectName))
+ {
+ projectName = Path.GetFileNameWithoutExtension(localFilePath);
  }
 
  while (scanIndex < lines.Count && !lines[scanIndex].Trim().StartsWith("["))

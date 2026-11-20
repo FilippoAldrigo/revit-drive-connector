@@ -39,7 +39,7 @@
  <GridViewColumn x:Name="ColSource" Header="Origine" Width="200" DisplayMemberBinding="{Binding SourceDisplay}" />
  <GridViewColumn x:Name="ColStatus" Header="Stato" Width="140" DisplayMemberBinding="{Binding StatusDisplay}" />
  <GridViewColumn x:Name="ColVersion" Header="Versione" Width="70" DisplayMemberBinding="{Binding Version}" />
- <GridViewColumn x:Name="ColModified" Header="Ultima Modifica" Width="140" DisplayMemberBinding="{Binding LastModifiedUtc, StringFormat='{}{0:dd/MM/yyyy HH:mm}'}" />
+ <GridViewColumn x:Name="ColModified" Header="Ultima Modifica" Width="140" DisplayMemberBinding="{Binding LastModifiedLocal, StringFormat='{}{0:dd/MM/yyyy HH:mm}'}" />
  </GridView>
  </ListView.View>
  </ListView>

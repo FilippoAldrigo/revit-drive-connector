@@ -100,18 +100,19 @@ namespace RevitDriveConnector.Addin.UI
                     if (SynchronizationCoordinator.IsDriveManagedPath(centralPath))
                     {
                         string projectId = SynchronizationCoordinator.ExtractProjectName(centralPath);
-                        string user = _doc.Application.Username;
-                        _ = Task.Run(() => IpcClient.SendRequestAsync(new IpcRequest
+                        string linksDir = System.IO.Path.Combine(ExternalLinkManagerService.GetProjectBaseDirectory(_doc), "Links");
+                        if (System.IO.Directory.Exists(linksDir))
                         {
-                            Command = IpcCommand.UploadProjectChanges,
-                            PayloadJson = JsonSerializer.Serialize(new
+                            _ = Task.Run(() => IpcClient.SendRequestAsync(new IpcRequest
                             {
-                                ProjectId = projectId,
-                                CentralPath = centralPath,
-                                LockToken = "",
-                                User = user
-                            })
-                        }, timeoutMs: 60000));
+                                Command = IpcCommand.UploadProjectLinks,
+                                PayloadJson = JsonSerializer.Serialize(new
+                                {
+                                    ProjectId = projectId,
+                                    LinksDir = linksDir
+                                })
+                            }, timeoutMs: 60000));
+                        }
                     }
                 }
 

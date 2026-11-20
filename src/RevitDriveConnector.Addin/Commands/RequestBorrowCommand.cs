@@ -54,6 +54,7 @@ namespace RevitDriveConnector.Addin.Commands
             int sentCount = 0;
             int alreadyOwnedCount = 0;
             int freeAcquiredCount = 0;
+            var notOwnedIds = new System.Collections.Generic.List<ElementId>();
 
             foreach (var elemId in selectedIds)
             {
@@ -70,17 +71,7 @@ namespace RevitDriveConnector.Addin.Commands
 
                 if (status == CheckoutStatus.NotOwned)
                 {
-                    try
-                    {
-                        using var trans = new Transaction(doc, "Checkout element");
-                        trans.Start();
-                        WorksharingUtils.CheckoutElements(doc, new[] { elemId });
-                        trans.Commit();
-                        freeAcquiredCount++;
-                    }
-                    catch
-                    {
-                    }
+                    notOwnedIds.Add(elemId);
                     continue;
                 }
 
@@ -127,20 +118,31 @@ namespace RevitDriveConnector.Addin.Commands
                 }
             }
 
-            if (freeAcquiredCount > 0 && !string.IsNullOrEmpty(centralPath))
+            if (notOwnedIds.Count > 0)
             {
-                // Propaga sul Cloud i nuovi permessi degli elementi presi in carico
-                _ = Task.Run(() => IpcClient.SendRequestAsync(new IpcRequest
+                bool ok = SynchronizationCoordinator.ExecuteLockedCentralOperation(doc, () =>
                 {
-                    Command = IpcCommand.UploadProjectChanges,
-                    PayloadJson = JsonSerializer.Serialize(new
+                    var stillFree = notOwnedIds
+                        .Where(id => WorksharingUtils.GetCheckoutStatus(doc, id, out _) == CheckoutStatus.NotOwned)
+                        .ToList();
+
+                    if (stillFree.Count == 0)
                     {
-                        ProjectId = projectId,
-                        CentralPath = centralPath,
-                        LockToken = "",
-                        User = currentUsername
-                    })
-                }, timeoutMs: 60000));
+                        return false;
+                    }
+
+                    using var trans = new Transaction(doc, "Checkout element");
+                    trans.Start();
+                    WorksharingUtils.CheckoutElements(doc, stillFree);
+                    trans.Commit();
+                    freeAcquiredCount = stillFree.Count;
+                    return true;
+                }, out string lockErr);
+
+                if (!ok)
+                {
+                    TaskDialog.Show(commandTitle, $"Impossibile completare la presa in carico sicura degli elementi:\n{lockErr}");
+                }
             }
 
             if (sentCount > 0)

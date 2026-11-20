@@ -75,8 +75,15 @@ namespace RevitDriveConnector.Addin
             SynchronizationCoordinator.OnDocumentOpened(sender, e);
             if (e.Document != null && e.Document.IsWorkshared)
             {
-                // Auto-risoluzione dei collegamenti mancanti cercando nella cartella Links di Google Drive
-                ExternalLinkManagerService.AutoHealMissingLinks(e.Document);
+                string centralPath = SynchronizationCoordinator.GetCentralModelPath(e.Document);
+                bool isDriveManaged = SynchronizationCoordinator.IsDriveManagedPath(e.Document.PathName) ||
+                                      SynchronizationCoordinator.IsDriveManagedPath(centralPath);
+
+                if (isDriveManaged)
+                {
+                    // Auto-risoluzione dei collegamenti mancanti cercando nella cartella Links di Google Drive
+                    ExternalLinkManagerService.AutoHealMissingLinks(e.Document);
+                }
 
                 // Se è un modello locale gestito da Drive Connector, pianifichiamo un allineamento cloud + ReloadLatest su Idling
                 if (!e.Document.IsDetached && SynchronizationCoordinator.IsDriveManagedPath(e.Document.PathName))
@@ -112,7 +119,15 @@ namespace RevitDriveConnector.Addin
                             bool aligned = SynchronizationCoordinator.AlignCentralFromCloudSync(doc);
                             if (aligned)
                             {
-                                doc.ReloadLatest(new ReloadLatestOptions());
+                                try
+                                {
+                                    SynchronizationCoordinator.SuppressNextReloadAlignment = true;
+                                    doc.ReloadLatest(new ReloadLatestOptions());
+                                }
+                                finally
+                                {
+                                    SynchronizationCoordinator.SuppressNextReloadAlignment = false;
+                                }
                             }
                             else
                             {

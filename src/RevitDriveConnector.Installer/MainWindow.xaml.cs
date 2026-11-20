@@ -287,19 +287,22 @@ namespace RevitDriveConnector.Installer
             string cachePath = @"C:\RevitDriveCache";
             Directory.CreateDirectory(cachePath);
 
-            // 5. Scrivi config.json
+            // 5. Scrivi config.json solo se non esiste già (preserva eventuali impostazioni personalizzate in aggiornamento)
             string configFile = Path.Combine(appData, "config.json");
-            var configObj = new
+            if (!File.Exists(configFile))
             {
-                coordinatorUrl = "http://localhost:5000",
-                cloudStoragePath = cloudProjectsPath,
-                localCachePath = cachePath,
-                autoStartServices = true,
-                syncTimeoutSeconds = 90,
-                language = "Auto"
-            };
+                var configObj = new
+                {
+                    coordinatorUrl = "http://localhost:5000",
+                    cloudStoragePath = cloudProjectsPath,
+                    localCachePath = cachePath,
+                    autoStartServices = true,
+                    syncTimeoutSeconds = 90,
+                    language = "Auto"
+                };
 
-            File.WriteAllText(configFile, JsonSerializer.Serialize(configObj, new JsonSerializerOptions { WriteIndented = true }));
+                File.WriteAllText(configFile, JsonSerializer.Serialize(configObj, new JsonSerializerOptions { WriteIndented = true }));
+            }
         }
 
         private void BtnCancel_Click(object sender, RoutedEventArgs e)

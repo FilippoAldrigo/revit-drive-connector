@@ -72,6 +72,12 @@ namespace RevitDriveConnector.Addin.Commands
  return Result.Cancelled;
  }
 
+ if (SynchronizationCoordinator.LastUploadFailed)
+ {
+ message = SynchronizationCoordinator.LastUploadError ?? "Upload su Google Drive non riuscito.";
+ return Result.Failed;
+ }
+
  TaskDialog.Show(Loc.Tr("Sync_Title"), Loc.Tr("Sync_Success"));
  return Result.Succeeded;
  }

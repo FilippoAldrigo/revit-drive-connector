@@ -30,6 +30,14 @@ namespace RevitDriveConnector.Addin.Commands
 
             var doc = uidoc.Document;
 
+            string existingCentral = doc.IsWorkshared ? SynchronizationCoordinator.GetCentralModelPath(doc) : string.Empty;
+            if (SynchronizationCoordinator.IsDriveManagedPath(doc.PathName) ||
+                SynchronizationCoordinator.IsDriveManagedPath(existingCentral))
+            {
+                TaskDialog.Show(Loc.Tr("Publish_Title"), Loc.Tr("Publish_AlreadyPublished"));
+                return Result.Cancelled;
+            }
+
             try
             {
                 var config = AppConfig.Load();
