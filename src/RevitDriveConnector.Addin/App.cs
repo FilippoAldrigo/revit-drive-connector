@@ -41,6 +41,9 @@ namespace RevitDriveConnector.Addin
                 // Inizializza ExternalEvent per rilascio permessi da notifiche Toast modeless
                 BorrowNotificationService.InitializeExternalEvent();
 
+                // Inizializza motore di blocco live per elementi in modifica prima del sync
+                LiveElementLockService.Initialize(application);
+
                 // Inizializza la Ribbon UI
                 CreateRibbonTabAndButtons(application);
 
@@ -48,6 +51,8 @@ namespace RevitDriveConnector.Addin
                 application.ControlledApplication.DocumentSynchronizingWithCentral += SynchronizationCoordinator.OnDocumentSynchronizingWithCentral;
                 application.ControlledApplication.DocumentSynchronizedWithCentral += SynchronizationCoordinator.OnDocumentSynchronizedWithCentral;
                 application.ControlledApplication.DocumentReloadingLatest += SynchronizationCoordinator.OnDocumentReloadingLatest;
+                application.ControlledApplication.DocumentReloadedLatest += OnDocumentReloadedLatest;
+                application.ControlledApplication.DocumentChanged += OnDocumentChanged;
                 application.ControlledApplication.DocumentOpened += OnDocumentOpened;
                 application.ControlledApplication.DocumentClosing += SynchronizationCoordinator.OnDocumentClosing;
 
@@ -75,6 +80,8 @@ namespace RevitDriveConnector.Addin
             SynchronizationCoordinator.OnDocumentOpened(sender, e);
             if (e.Document != null && e.Document.IsWorkshared)
             {
+                LiveElementLockService.OnDocumentOpened(e.Document);
+
                 string centralPath = SynchronizationCoordinator.GetCentralModelPath(e.Document);
                 bool isDriveManaged = SynchronizationCoordinator.IsDriveManagedPath(e.Document.PathName) ||
                                       SynchronizationCoordinator.IsDriveManagedPath(centralPath);
@@ -101,6 +108,25 @@ namespace RevitDriveConnector.Addin
             }
         }
 
+        private void OnDocumentChanged(object? sender, DocumentChangedEventArgs e)
+        {
+            LiveElementLockService.OnDocumentChanged(e);
+        }
+
+        private void OnDocumentReloadedLatest(object? sender, DocumentReloadedLatestEventArgs e)
+        {
+            LiveElementLockService.IsSyncOrReloadActive = false;
+            if (e.Document != null && e.Document.IsWorkshared)
+            {
+                string centralPath = SynchronizationCoordinator.GetCentralModelPath(e.Document);
+                if (SynchronizationCoordinator.IsDriveManagedPath(centralPath))
+                {
+                    string projectId = SynchronizationCoordinator.ExtractProjectName(centralPath);
+                    LiveElementLockService.SeedElementLookupCache(e.Document, projectId);
+                }
+            }
+        }
+
         private void OnIdling(object? sender, Autodesk.Revit.UI.Events.IdlingEventArgs e)
         {
             if (sender is UIApplication uiapp)
@@ -122,11 +148,13 @@ namespace RevitDriveConnector.Addin
                                 try
                                 {
                                     SynchronizationCoordinator.SuppressNextReloadAlignment = true;
+                                    LiveElementLockService.IsSyncOrReloadActive = true;
                                     doc.ReloadLatest(new ReloadLatestOptions());
                                 }
                                 finally
                                 {
                                     SynchronizationCoordinator.SuppressNextReloadAlignment = false;
+                                    LiveElementLockService.IsSyncOrReloadActive = false;
                                 }
                             }
                             else
@@ -151,6 +179,7 @@ namespace RevitDriveConnector.Addin
                 }
 
                 BorrowNotificationService.OnIdlingCheck(uiapp);
+                LiveElementLockService.OnIdlingTick(uiapp);
             }
         }
 
@@ -161,11 +190,14 @@ namespace RevitDriveConnector.Addin
                 application.ControlledApplication.DocumentSynchronizingWithCentral -= SynchronizationCoordinator.OnDocumentSynchronizingWithCentral;
                 application.ControlledApplication.DocumentSynchronizedWithCentral -= SynchronizationCoordinator.OnDocumentSynchronizedWithCentral;
                 application.ControlledApplication.DocumentReloadingLatest -= SynchronizationCoordinator.OnDocumentReloadingLatest;
+                application.ControlledApplication.DocumentReloadedLatest -= OnDocumentReloadedLatest;
+                application.ControlledApplication.DocumentChanged -= OnDocumentChanged;
                 application.ControlledApplication.DocumentOpened -= OnDocumentOpened;
                 application.ControlledApplication.DocumentClosing -= SynchronizationCoordinator.OnDocumentClosing;
 
                 application.Idling -= OnIdling;
                 BorrowNotificationService.ClearSession();
+                LiveElementLockService.Shutdown();
 
                 return Result.Succeeded;
             }

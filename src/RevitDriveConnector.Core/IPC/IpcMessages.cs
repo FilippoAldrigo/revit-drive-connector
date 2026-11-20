@@ -31,7 +31,9 @@ namespace RevitDriveConnector.Core.IPC
  MountCloudProject,
  AddCollaborator,
  ListCollaborators,
- RemoveCollaborator
+ RemoveCollaborator,
+ PublishLiveEdits,
+ GetRemoteLiveEdits
  }
 
  public class IpcRequest

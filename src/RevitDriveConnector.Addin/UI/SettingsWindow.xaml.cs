@@ -32,6 +32,7 @@ namespace RevitDriveConnector.Addin.UI
  "en" => 2,
  _ => 0
  };
+ ChkEnableLiveLocks.IsChecked = _config.EnableLiveElementLocks;
 
  Loaded += async (s, e) => await LoadLiveStatusAsync();
  }
@@ -70,6 +71,7 @@ namespace RevitDriveConnector.Addin.UI
  LblCachePath.Text = Loc.Tr("Settings_CachePath");
  LblCoordUrl.Text = Loc.Tr("Settings_CoordUrl");
  LblLanguage.Text = Loc.Tr("Settings_Language");
+ ChkEnableLiveLocks.Content = Loc.Tr("Settings_EnableLiveLocks");
  BtnBrowseCloud.Content = Loc.Tr("Settings_BtnBrowse");
  BtnBrowseCache.Content = Loc.Tr("Settings_BtnBrowse");
  BtnCancel.Content = Loc.Tr("Common_Cancel");
@@ -132,9 +134,11 @@ namespace RevitDriveConnector.Addin.UI
  2 => "en",
  _ => "Auto"
  };
+ _config.EnableLiveElementLocks = ChkEnableLiveLocks.IsChecked == true;
 
  Loc.Initialize(_config.Language);
  _config.Save();
+ Services.LiveElementLockService.ReloadSettings();
 
  try
  {

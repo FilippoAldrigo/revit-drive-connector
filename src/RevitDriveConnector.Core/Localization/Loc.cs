@@ -379,7 +379,19 @@ namespace RevitDriveConnector.Core.Localization
  ["Common_Success"] = new() { ["it"] = "Operazione completata con successo.", ["en"] = "Operation completed successfully." },
  ["Common_RoleOwner"] = new() { ["it"] = "Proprietario", ["en"] = "Owner" },
  ["Common_RoleEditor"] = new() { ["it"] = "Editor (Modifica & Sincronizza)", ["en"] = "Editor (Edit & Sync)" },
- ["Common_RoleViewer"] = new() { ["it"] = "Visualizzatore (Sola Lettura)", ["en"] = "Viewer (Read Only)" }
+ ["Common_RoleViewer"] = new() { ["it"] = "Visualizzatore (Sola Lettura)", ["en"] = "Viewer (Read Only)" },
+
+ // Live Element Locks
+ ["Settings_EnableLiveLocks"] = new() { ["it"] = "Attiva blocco live elementi in modifica (stile LAN)", ["en"] = "Enable live element edit locking (LAN-style)" },
+ ["LiveLock_Title"] = new() { ["it"] = "Elemento in modifica live da un collega", ["en"] = "Element currently edited live by a teammate" },
+ ["LiveLock_BlockedDetail"] = new() {
+ ["it"] = "Questo elemento e attualmente in modifica sul PC di '{0}' ({1}) ma non e ancora stato sincronizzato.\n\nAttendi che {0} sincronizzi su Drive oppure usa 'Richiedi Prestito'.",
+ ["en"] = "This element is currently being edited on '{0}' ({1}) and has not been synchronized yet.\n\nPlease wait for {0} to sync to Drive or use 'Request Borrow'."
+ },
+ ["LiveLock_FailureStatic"] = new() {
+ ["it"] = "Elemento bloccato in modifica live da un collega su Google Drive. Annulla questa operazione e attendi che il collega sincronizzi il modello.",
+ ["en"] = "Element is locked for live editing by a teammate on Google Drive. Cancel this operation and wait for your teammate to synchronize."
+ }
  };
  }
 }

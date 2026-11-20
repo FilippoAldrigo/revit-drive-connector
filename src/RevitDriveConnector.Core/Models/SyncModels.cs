@@ -261,4 +261,37 @@ namespace RevitDriveConnector.Core.Models
         [JsonPropertyName("collaborator")]
         public CollaboratorItem? Collaborator { get; set; }
     }
+
+    public class UserLiveEditsState
+    {
+        [JsonPropertyName("projectId")]
+        public string ProjectId { get; set; } = string.Empty;
+
+        [JsonPropertyName("user")]
+        public string User { get; set; } = string.Empty;
+
+        [JsonPropertyName("machine")]
+        public string Machine { get; set; } = string.Empty;
+
+        [JsonPropertyName("updatedUtc")]
+        public DateTime UpdatedUtc { get; set; } = DateTime.UtcNow;
+
+        [JsonPropertyName("elementUniqueIds")]
+        public List<string> ElementUniqueIds { get; set; } = new();
+    }
+
+    public class RemoteElementLockInfo
+    {
+        [JsonPropertyName("elementUniqueId")]
+        public string ElementUniqueId { get; set; } = string.Empty;
+
+        [JsonPropertyName("ownerUser")]
+        public string OwnerUser { get; set; } = string.Empty;
+
+        [JsonPropertyName("ownerMachine")]
+        public string OwnerMachine { get; set; } = string.Empty;
+
+        [JsonPropertyName("updatedUtc")]
+        public DateTime UpdatedUtc { get; set; }
+    }
 }

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -135,6 +136,8 @@ namespace RevitDriveConnector.Core.Services
         private readonly HttpClient _http;
         private readonly Func<CancellationToken, Task<string>>? _customTokenProvider;
         private string _connectedEmail = string.Empty;
+        private readonly ConcurrentDictionary<string, string> _liveEditsUploadFileIds = new(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<string, (DateTimeOffset? ModifiedTime, UserLiveEditsState State)> _remoteLiveEditsCache = new(StringComparer.OrdinalIgnoreCase);
 
         private bool HasAuth => _credential != null || _customTokenProvider != null;
         public bool IsNativeGoogleDriveConnected => HasAuth;
@@ -172,6 +175,7 @@ namespace RevitDriveConnector.Core.Services
             _config.LocalCachePath = fresh.LocalCachePath;
             _config.Language = fresh.Language;
             _config.SyncTimeoutSeconds = fresh.SyncTimeoutSeconds;
+            _config.EnableLiveElementLocks = fresh.EnableLiveElementLocks;
         }
 
         private void EnsureCredentialsExist()
@@ -3062,6 +3066,299 @@ namespace RevitDriveConnector.Core.Services
                     if (!sourceRelPaths.Contains(rel))
                     {
                         try { File.Delete(tgtFile); } catch { }
+                    }
+                }
+            }
+        }
+
+        private static string SanitizeFileToken(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return "unknown";
+            var invalid = Path.GetInvalidFileNameChars();
+            var sb = new StringBuilder(raw.Length);
+            foreach (char c in raw.Trim())
+            {
+                sb.Append(invalid.Contains(c) || char.IsWhiteSpace(c) ? '_' : c);
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Publishes or clears the active uncommitted live element edit locks for a user on Google Drive / local shared .connector.
+        /// </summary>
+        public async Task PublishLiveEditsAsync(
+            string projectName,
+            string user,
+            string machine,
+            List<string> elementUniqueIds,
+            CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(projectName) || string.IsNullOrWhiteSpace(user)) return;
+
+            ReloadConfig();
+            if (!HasAuth)
+            {
+                await InitializeAsync(ct);
+            }
+
+            string safeUser = SanitizeFileToken(user);
+            string fileName = $"live_edits_{safeUser}.json";
+            string? cloudFolderId = HasAuth ? await GetProjectFolderIdAsync(projectName, createIfMissing: false, ct) : null;
+            string remoteProjectDir = DriveShortcutResolver.ResolveProjectDirectory(_config.CloudStoragePath, projectName, cloudFolderId);
+            string connectorDir = Path.Combine(remoteProjectDir, ".connector");
+            string localFilePath = Path.Combine(connectorDir, fileName);
+
+            var cleanIds = (elementUniqueIds ?? new List<string>())
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            try
+            {
+                if (cleanIds.Count == 0)
+                {
+                    if (File.Exists(localFilePath))
+                    {
+                        try { File.Delete(localFilePath); } catch { }
+                    }
+                }
+                else
+                {
+                    Directory.CreateDirectory(connectorDir);
+                    var state = new UserLiveEditsState
+                    {
+                        ProjectId = projectName,
+                        User = user,
+                        Machine = machine,
+                        UpdatedUtc = NetworkTimeHelper.GetAccurateUtc(),
+                        ElementUniqueIds = cleanIds
+                    };
+                    string json = JsonSerializer.Serialize(state);
+                    await File.WriteAllTextAsync(localFilePath, json, ct);
+                }
+            }
+            catch { }
+
+            if (!HasAuth || string.IsNullOrEmpty(cloudFolderId)) return;
+
+            try
+            {
+                string? cloudConnectorId = await GetSubfolderIdAsync(cloudFolderId, ".connector", createIfMissing: cleanIds.Count > 0, ct);
+                if (string.IsNullOrEmpty(cloudConnectorId)) return;
+
+                string cacheKey = $"{projectName}::{safeUser}";
+
+                if (cleanIds.Count == 0)
+                {
+                    if (_liveEditsUploadFileIds.TryRemove(cacheKey, out string? cachedId) && !string.IsNullOrEmpty(cachedId))
+                    {
+                        try { await DriveDeleteFileAsync(cachedId, ct); } catch { }
+                    }
+
+                    var existing = await DriveListFilesAsync(
+                        $"'{cloudConnectorId}' in parents and name = '{fileName.Replace("'", "\\'")}' and trashed = false",
+                        "id,name",
+                        10,
+                        ct);
+                    foreach (var item in existing)
+                    {
+                        try { await DriveDeleteFileAsync(item.Id, ct); } catch { }
+                    }
+                    return;
+                }
+
+                var payload = new UserLiveEditsState
+                {
+                    ProjectId = projectName,
+                    User = user,
+                    Machine = machine,
+                    UpdatedUtc = NetworkTimeHelper.GetAccurateUtc(),
+                    ElementUniqueIds = cleanIds
+                };
+                byte[] bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload));
+
+                if (_liveEditsUploadFileIds.TryGetValue(cacheKey, out string? knownId) && !string.IsNullOrEmpty(knownId))
+                {
+                    try
+                    {
+                        using var ms = new MemoryStream(bytes);
+                        await DriveUpdateFileContentAsync(knownId, ms, ct);
+                        return;
+                    }
+                    catch
+                    {
+                        _liveEditsUploadFileIds.TryRemove(cacheKey, out _);
+                    }
+                }
+
+                var matches = await DriveListFilesAsync(
+                    $"'{cloudConnectorId}' in parents and name = '{fileName.Replace("'", "\\'")}' and trashed = false",
+                    "id,name,modifiedTime",
+                    10,
+                    ct);
+
+                var primary = matches
+                    .OrderByDescending(x => x.ModifiedTime ?? DateTimeOffset.MinValue)
+                    .FirstOrDefault();
+
+                if (primary != null)
+                {
+                    using var ms = new MemoryStream(bytes);
+                    await DriveUpdateFileContentAsync(primary.Id, ms, ct);
+                    _liveEditsUploadFileIds[cacheKey] = primary.Id;
+
+                    foreach (var dup in matches.Where(x => x.Id != primary.Id))
+                    {
+                        try { await DriveDeleteFileAsync(dup.Id, ct); } catch { }
+                    }
+                }
+                else
+                {
+                    using var ms = new MemoryStream(bytes);
+                    var created = await DriveCreateAndUploadFileAsync(fileName, cloudConnectorId, ms, ct);
+                    if (created != null && !string.IsNullOrEmpty(created.Id))
+                    {
+                        _liveEditsUploadFileIds[cacheKey] = created.Id;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[GoogleDriveService] PublishLiveEditsAsync warning: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Retrieves active non-expired live element edit locks held by other teammates.
+        /// Uses Drive modifiedTime metadata caching to minimize API bandwidth.
+        /// </summary>
+        public async Task<List<RemoteElementLockInfo>> GetRemoteLiveEditsAsync(
+            string projectName,
+            string currentUser,
+            CancellationToken ct = default)
+        {
+            var result = new List<RemoteElementLockInfo>();
+            if (string.IsNullOrWhiteSpace(projectName)) return result;
+
+            ReloadConfig();
+            if (!HasAuth)
+            {
+                await InitializeAsync(ct);
+            }
+
+            var nowUtc = NetworkTimeHelper.GetAccurateUtc();
+            const double liveLockTtlMinutes = 15.0;
+
+            string? cloudFolderId = HasAuth ? await GetProjectFolderIdAsync(projectName, createIfMissing: false, ct) : null;
+            if (HasAuth && !string.IsNullOrEmpty(cloudFolderId))
+            {
+                try
+                {
+                    string? cloudConnectorId = await GetSubfolderIdAsync(cloudFolderId, ".connector", createIfMissing: false, ct);
+                    if (string.IsNullOrEmpty(cloudConnectorId)) return result;
+
+                    var items = await DriveListFilesAsync(
+                        $"'{cloudConnectorId}' in parents and name contains 'live_edits_' and trashed = false",
+                        "id,name,mimeType,modifiedTime",
+                        50,
+                        ct);
+
+                    string ownFileName = $"live_edits_{SanitizeFileToken(currentUser)}.json";
+                    var states = new List<UserLiveEditsState>();
+
+                    foreach (var item in items.Where(f =>
+                        f.MimeType != "application/vnd.google-apps.folder" &&
+                        f.Name.StartsWith("live_edits_", StringComparison.OrdinalIgnoreCase) &&
+                        f.Name.EndsWith(".json", StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(f.Name, ownFileName, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        UserLiveEditsState? state = null;
+                        if (_remoteLiveEditsCache.TryGetValue(item.Id, out var cached) &&
+                            cached.ModifiedTime.HasValue &&
+                            item.ModifiedTime.HasValue &&
+                            cached.ModifiedTime.Value == item.ModifiedTime.Value)
+                        {
+                            state = cached.State;
+                        }
+                        else
+                        {
+                            try
+                            {
+                                using var ms = new MemoryStream();
+                                await DriveDownloadFileAsync(item.Id, ms, ct);
+                                string json = Encoding.UTF8.GetString(ms.ToArray());
+                                state = JsonSerializer.Deserialize<UserLiveEditsState>(json);
+                                if (state != null)
+                                {
+                                    _remoteLiveEditsCache[item.Id] = (item.ModifiedTime, state);
+                                }
+                            }
+                            catch { }
+                        }
+
+                        if (state != null)
+                        {
+                            states.Add(state);
+                        }
+                    }
+
+                    MergeRemoteLiveEditStates(states, currentUser, nowUtc, liveLockTtlMinutes, result);
+                    return result;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[GoogleDriveService] GetRemoteLiveEditsAsync warning: {ex.Message}");
+                }
+            }
+
+            // Local/LAN folder fallback
+            string remoteProjectDir = DriveShortcutResolver.ResolveProjectDirectory(_config.CloudStoragePath, projectName, cloudFolderId);
+            string connectorDir = Path.Combine(remoteProjectDir, ".connector");
+            if (Directory.Exists(connectorDir))
+            {
+                var localStates = new List<UserLiveEditsState>();
+                foreach (var file in Directory.GetFiles(connectorDir, "live_edits_*.json"))
+                {
+                    try
+                    {
+                        string json = await File.ReadAllTextAsync(file, ct);
+                        var state = JsonSerializer.Deserialize<UserLiveEditsState>(json);
+                        if (state != null) localStates.Add(state);
+                    }
+                    catch { }
+                }
+                MergeRemoteLiveEditStates(localStates, currentUser, nowUtc, liveLockTtlMinutes, result);
+            }
+
+            return result;
+        }
+
+        private static void MergeRemoteLiveEditStates(
+            IEnumerable<UserLiveEditsState> states,
+            string currentUser,
+            DateTime nowUtc,
+            double ttlMinutes,
+            List<RemoteElementLockInfo> output)
+        {
+            var seenUniqueIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var state in states.OrderBy(s => s.UpdatedUtc))
+            {
+                if (string.Equals(state.User, currentUser, StringComparison.OrdinalIgnoreCase)) continue;
+                if ((nowUtc - state.UpdatedUtc).TotalMinutes > ttlMinutes) continue;
+                if (state.ElementUniqueIds == null || state.ElementUniqueIds.Count == 0) continue;
+
+                foreach (var uid in state.ElementUniqueIds)
+                {
+                    if (string.IsNullOrWhiteSpace(uid)) continue;
+                    if (seenUniqueIds.Add(uid))
+                    {
+                        output.Add(new RemoteElementLockInfo
+                        {
+                            ElementUniqueId = uid,
+                            OwnerUser = state.User,
+                            OwnerMachine = state.Machine,
+                            UpdatedUtc = state.UpdatedUtc
+                        });
                     }
                 }
             }

@@ -71,8 +71,16 @@ namespace RevitDriveConnector.Addin.Commands
 
                 if (status == CheckoutStatus.NotOwned)
                 {
-                    notOwnedIds.Add(elemId);
-                    continue;
+                    if (LiveElementLockService.TryGetRemoteLock(doc, elem.UniqueId, out var liveLock) && liveLock != null)
+                    {
+                        status = CheckoutStatus.OwnedByOtherUser;
+                        owner = liveLock.OwnerUser;
+                    }
+                    else
+                    {
+                        notOwnedIds.Add(elemId);
+                        continue;
+                    }
                 }
 
                 if (status == CheckoutStatus.OwnedByOtherUser)

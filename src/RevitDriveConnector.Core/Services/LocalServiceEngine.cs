@@ -128,6 +128,7 @@ namespace RevitDriveConnector.Core.Services
                         if (!string.IsNullOrEmpty(closeProj))
                         {
                             await DriveService.UpdateActiveUserSessionAsync(closeProj, closeUser, closeMachine, isActive: false, isSyncing: false, ct);
+                            await DriveService.PublishLiveEditsAsync(closeProj, closeUser, closeMachine, new List<string>(), ct);
                         }
                         return new IpcResponse { RequestId = request.RequestId, Success = true };
 
@@ -531,6 +532,32 @@ namespace RevitDriveConnector.Core.Services
                             RequestId = request.RequestId,
                             Success = bSuccess,
                             DataJson = bSuccess ? "Lock rimosso con successo." : "Impossibile rimuovere il lock su Google Drive."
+                        };
+
+                    case IpcCommand.PublishLiveEdits:
+                        var liveState = JsonSerializer.Deserialize<UserLiveEditsState>(request.PayloadJson);
+                        if (liveState != null && !string.IsNullOrWhiteSpace(liveState.ProjectId) && !string.IsNullOrWhiteSpace(liveState.User))
+                        {
+                            string machineName = string.IsNullOrWhiteSpace(liveState.Machine) ? Environment.MachineName : liveState.Machine;
+                            await DriveService.PublishLiveEditsAsync(
+                                liveState.ProjectId,
+                                liveState.User,
+                                machineName,
+                                liveState.ElementUniqueIds ?? new List<string>(),
+                                ct);
+                        }
+                        return new IpcResponse { RequestId = request.RequestId, Success = true };
+
+                    case IpcCommand.GetRemoteLiveEdits:
+                        var liveQuery = JsonSerializer.Deserialize<Dictionary<string, string>>(request.PayloadJson);
+                        string lqProj = liveQuery != null && liveQuery.TryGetValue("ProjectId", out var lp) ? lp : "";
+                        string lqUser = liveQuery != null && liveQuery.TryGetValue("User", out var lu) ? lu : "";
+                        var remoteLocks = await DriveService.GetRemoteLiveEditsAsync(lqProj, lqUser, ct);
+                        return new IpcResponse
+                        {
+                            RequestId = request.RequestId,
+                            Success = true,
+                            DataJson = JsonSerializer.Serialize(remoteLocks)
                         };
 
                     default:

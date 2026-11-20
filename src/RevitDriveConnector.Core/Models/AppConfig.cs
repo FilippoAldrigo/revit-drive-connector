@@ -26,6 +26,9 @@ namespace RevitDriveConnector.Core.Models
         [JsonPropertyName("language")]
         public string Language { get; set; } = "Auto";
 
+        [JsonPropertyName("enableLiveElementLocks")]
+        public bool EnableLiveElementLocks { get; set; } = true;
+
         public static string GetConfigFilePath()
         {
             string appData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RevitDriveConnector");

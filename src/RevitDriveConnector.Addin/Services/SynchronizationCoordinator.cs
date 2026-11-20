@@ -76,6 +76,8 @@ namespace RevitDriveConnector.Addin.Services
                 var doc = e.Document;
                 if (doc == null) return;
 
+                LiveElementLockService.OnDocumentClosing(doc);
+
                 string centralPath = doc.IsWorkshared ? GetCentralModelPath(doc) : string.Empty;
                 string projectId = !string.IsNullOrEmpty(centralPath) ? ExtractProjectName(centralPath) : doc.Title;
                 string title = doc.Title;
@@ -117,6 +119,7 @@ namespace RevitDriveConnector.Addin.Services
 
             if (!AlignCentralFromCloudSync(doc))
             {
+                LiveElementLockService.IsSyncOrReloadActive = false;
                 if (e.Cancellable)
                 {
                     try { e.Cancel(); } catch { }
@@ -126,6 +129,10 @@ namespace RevitDriveConnector.Addin.Services
                     "Drive Connector - Errore Allineamento",
                     System.Windows.MessageBoxButton.OK,
                     System.Windows.MessageBoxImage.Warning);
+            }
+            else
+            {
+                LiveElementLockService.IsSyncOrReloadActive = true;
             }
         }
 
@@ -329,9 +336,11 @@ namespace RevitDriveConnector.Addin.Services
 
                 CurrentExpectedBaseVersion = gatekeeper.CloudVersion;
                 CurrentExpectedBaseHash = gatekeeper.ExpectedHash;
+                LiveElementLockService.IsSyncOrReloadActive = true;
             }
             catch (Exception ex)
             {
+                LiveElementLockService.IsSyncOrReloadActive = false;
                 StopLockHeartbeat();
                 string tokenToRelease = CurrentLockToken ?? "";
                 CurrentLockToken = null;
@@ -367,81 +376,92 @@ namespace RevitDriveConnector.Addin.Services
             CurrentExpectedBaseVersion = null;
             CurrentExpectedBaseHash = null;
 
-            var doc = e.Document;
-            if (doc == null || !doc.IsWorkshared) return;
-
-            string centralPath = GetCentralModelPath(doc);
-            if (!IsDriveManagedPath(centralPath)) return;
-
-            string projectId = ExtractProjectName(centralPath);
-            string user = doc.Application.Username;
-
-            if (LastSyncCancelled)
-            {
-                LastSyncCancelled = false;
-                if (!string.IsNullOrEmpty(token))
-                {
-                    ReleaseLockSync(projectId, token, user);
-                }
-                return;
-            }
-
-            if (e.Status != RevitAPIEventStatus.Succeeded)
-            {
-                LastSyncCancelled = e.Status == RevitAPIEventStatus.Cancelled;
-                LastUploadFailed = e.Status == RevitAPIEventStatus.Failed;
-                LastUploadError = $"Sincronizzazione Revit non completata ({e.Status}).";
-                if (!string.IsNullOrEmpty(token))
-                {
-                    ReleaseLockSync(projectId, token, user);
-                }
-                return;
-            }
-
             try
             {
-                var uploadPayload = JsonSerializer.Serialize(new
-                {
-                    ProjectId = projectId,
-                    CentralPath = centralPath,
-                    LockToken = token,
-                    User = user,
-                    ExpectedBaseVersion = expectedBaseVersion,
-                    ExpectedBaseHash = expectedBaseHash
-                });
+                var doc = e.Document;
+                if (doc == null || !doc.IsWorkshared) return;
 
-                var uploadTask = Task.Run(() => IpcClient.SendRequestAsync(new IpcRequest
-                {
-                    Command = IpcCommand.UploadProjectChanges,
-                    PayloadJson = uploadPayload
-                }, timeoutMs: 300000));
+                string centralPath = GetCentralModelPath(doc);
+                if (!IsDriveManagedPath(centralPath)) return;
 
-                uploadTask.Wait();
-                var uploadResp = uploadTask.Result;
-                if (!uploadResp.Success)
+                string projectId = ExtractProjectName(centralPath);
+                string user = doc.Application.Username;
+
+                if (LastSyncCancelled)
+                {
+                    LastSyncCancelled = false;
+                    if (!string.IsNullOrEmpty(token))
+                    {
+                        ReleaseLockSync(projectId, token, user);
+                    }
+                    return;
+                }
+
+                if (e.Status != RevitAPIEventStatus.Succeeded)
+                {
+                    LastSyncCancelled = e.Status == RevitAPIEventStatus.Cancelled;
+                    LastUploadFailed = e.Status == RevitAPIEventStatus.Failed;
+                    LastUploadError = $"Sincronizzazione Revit non completata ({e.Status}).";
+                    if (!string.IsNullOrEmpty(token))
+                    {
+                        ReleaseLockSync(projectId, token, user);
+                    }
+                    return;
+                }
+
+                try
+                {
+                    var uploadPayload = JsonSerializer.Serialize(new
+                    {
+                        ProjectId = projectId,
+                        CentralPath = centralPath,
+                        LockToken = token,
+                        User = user,
+                        ExpectedBaseVersion = expectedBaseVersion,
+                        ExpectedBaseHash = expectedBaseHash
+                    });
+
+                    var uploadTask = Task.Run(() => IpcClient.SendRequestAsync(new IpcRequest
+                    {
+                        Command = IpcCommand.UploadProjectChanges,
+                        PayloadJson = uploadPayload
+                    }, timeoutMs: 300000));
+
+                    uploadTask.Wait();
+                    var uploadResp = uploadTask.Result;
+                    if (!uploadResp.Success)
+                    {
+                        LastUploadFailed = true;
+                        LastUploadError = uploadResp.ErrorMessage;
+                        System.Windows.MessageBox.Show(
+                            $"La sincronizzazione locale in Revit è riuscita, ma il caricamento su Google Drive è stato bloccato/fallito:\n\n{uploadResp.ErrorMessage}",
+                            "Avviso Upload Drive",
+                            System.Windows.MessageBoxButton.OK,
+                            System.Windows.MessageBoxImage.Warning);
+                    }
+                    else
+                    {
+                        LiveElementLockService.OnDocumentSynchronized(doc);
+                    }
+                }
+                catch (Exception ex)
                 {
                     LastUploadFailed = true;
-                    LastUploadError = uploadResp.ErrorMessage;
+                    LastUploadError = ex.Message;
+                    if (!string.IsNullOrEmpty(token))
+                    {
+                        ReleaseLockSync(projectId, token, user);
+                    }
                     System.Windows.MessageBox.Show(
-                        $"La sincronizzazione locale in Revit è riuscita, ma il caricamento su Google Drive è stato bloccato/fallito:\n\n{uploadResp.ErrorMessage}",
+                        $"La sincronizzazione locale è riuscita, ma si è verificato un errore nel caricamento su Drive: {ex.Message}",
                         "Avviso Upload Drive",
                         System.Windows.MessageBoxButton.OK,
                         System.Windows.MessageBoxImage.Warning);
                 }
             }
-            catch (Exception ex)
+            finally
             {
-                LastUploadFailed = true;
-                LastUploadError = ex.Message;
-                if (!string.IsNullOrEmpty(token))
-                {
-                    ReleaseLockSync(projectId, token, user);
-                }
-                System.Windows.MessageBox.Show(
-                    $"La sincronizzazione locale è riuscita, ma si è verificato un errore nel caricamento su Drive: {ex.Message}",
-                    "Avviso Upload Drive",
-                    System.Windows.MessageBoxButton.OK,
-                    System.Windows.MessageBoxImage.Warning);
+                LiveElementLockService.IsSyncOrReloadActive = false;
             }
         }
 
@@ -591,6 +611,7 @@ namespace RevitDriveConnector.Addin.Services
                     try
                     {
                         SuppressNextReloadAlignment = true;
+                        LiveElementLockService.IsSyncOrReloadActive = true;
                         doc.ReloadLatest(new ReloadLatestOptions());
                     }
                     catch (Exception reloadEx)
@@ -601,12 +622,14 @@ namespace RevitDriveConnector.Addin.Services
                     finally
                     {
                         SuppressNextReloadAlignment = false;
+                        LiveElementLockService.IsSyncOrReloadActive = false;
                     }
                 }
 
                 bool shouldUpload = revitAction();
                 if (!shouldUpload)
                 {
+                    LiveElementLockService.OnDocumentSynchronized(doc);
                     return true;
                 }
 
@@ -635,6 +658,7 @@ namespace RevitDriveConnector.Addin.Services
                     return false;
                 }
 
+                LiveElementLockService.OnDocumentSynchronized(doc);
                 return true;
             }
             catch (Exception ex)
