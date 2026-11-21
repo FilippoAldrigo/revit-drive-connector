@@ -11,9 +11,10 @@ namespace RevitDriveConnector.Daemon
     {
         static async Task Main(string[] args)
         {
+            string ver = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.3.1";
             Console.Title = "Revit Google Drive Connector - Local Daemon";
             Console.WriteLine("======================================================");
-            Console.WriteLine(" REVIT GOOGLE DRIVE CONNECTOR - LOCAL DAEMON v1.2 ");
+            Console.WriteLine($" REVIT GOOGLE DRIVE CONNECTOR - LOCAL DAEMON v{ver} ");
             Console.WriteLine("======================================================");
 
             var config = AppConfig.Load();

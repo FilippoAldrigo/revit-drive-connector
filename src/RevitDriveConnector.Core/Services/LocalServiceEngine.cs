@@ -18,6 +18,24 @@ namespace RevitDriveConnector.Core.Services
         public static readonly GoogleDriveService DriveService = new();
         private static bool _initialized = false;
         private static readonly SemaphoreSlim _initLock = new(1, 1);
+        private static DateTime _coordinatorUnavailableUntilUtc = DateTime.MinValue;
+        private static string _lastCoordinatorUrl = string.Empty;
+
+        private static bool IsCoordinatorTemporarilySkipped(string url)
+        {
+            if (string.IsNullOrWhiteSpace(url)) return true;
+            if (!string.Equals(_lastCoordinatorUrl, url, StringComparison.OrdinalIgnoreCase))
+            {
+                _lastCoordinatorUrl = url;
+                _coordinatorUnavailableUntilUtc = DateTime.MinValue;
+            }
+            return DateTime.UtcNow < _coordinatorUnavailableUntilUtc;
+        }
+
+        private static void MarkCoordinatorUnavailable()
+        {
+            _coordinatorUnavailableUntilUtc = DateTime.UtcNow.AddSeconds(60);
+        }
 
         public static async Task EnsureInitializedAsync(CancellationToken ct = default)
         {
@@ -286,23 +304,29 @@ namespace RevitDriveConnector.Core.Services
                             };
                         }
 
-                        try
+                        if (!IsCoordinatorTemporarilySkipped(config.CoordinatorUrl))
                         {
-                            using var coordCts = new CancellationTokenSource(1500);
-                            var postResp = await HttpClient.PostAsJsonAsync($"{config.CoordinatorUrl}/api/lock/acquire", lockReq, coordCts.Token);
-                            var coordResponse = await postResp.Content.ReadFromJsonAsync<LockResponse>(cancellationToken: coordCts.Token);
-                            if (coordResponse != null && coordResponse.Status == SyncLockStatus.LockDeniedBusy)
+                            try
                             {
-                                await DriveService.ReleaseProjectLockAsync(lockReq.ProjectId, driveLockResp.LockToken ?? "", lockReq.User, ct);
-                                return new IpcResponse
+                                using var coordCts = new CancellationTokenSource(1200);
+                                var postResp = await HttpClient.PostAsJsonAsync($"{config.CoordinatorUrl}/api/lock/acquire", lockReq, coordCts.Token);
+                                var coordResponse = await postResp.Content.ReadFromJsonAsync<LockResponse>(cancellationToken: coordCts.Token);
+                                if (coordResponse != null && coordResponse.Status == SyncLockStatus.LockDeniedBusy)
                                 {
-                                    RequestId = request.RequestId,
-                                    Success = true,
-                                    DataJson = JsonSerializer.Serialize(coordResponse)
-                                };
+                                    await DriveService.ReleaseProjectLockAsync(lockReq.ProjectId, driveLockResp.LockToken ?? "", lockReq.User, ct);
+                                    return new IpcResponse
+                                    {
+                                        RequestId = request.RequestId,
+                                        Success = true,
+                                        DataJson = JsonSerializer.Serialize(coordResponse)
+                                    };
+                                }
+                            }
+                            catch
+                            {
+                                MarkCoordinatorUnavailable();
                             }
                         }
-                        catch { }
 
                         return new IpcResponse
                         {
@@ -317,11 +341,11 @@ namespace RevitDriveConnector.Core.Services
                         string hbToken = hbReq != null && hbReq.TryGetValue("LockToken", out var ht) ? ht : "";
                         string hbUser = hbReq != null && hbReq.TryGetValue("User", out var hu) ? hu : "";
                         bool hbOk = await DriveService.HeartbeatProjectLockAsync(hbProj, hbToken, hbUser, config.SyncTimeoutSeconds, ct);
-                        if (hbOk)
+                        if (hbOk && !IsCoordinatorTemporarilySkipped(config.CoordinatorUrl))
                         {
                             try
                             {
-                                using var coordCts = new CancellationTokenSource(1200);
+                                using var coordCts = new CancellationTokenSource(1000);
                                 await HttpClient.PostAsJsonAsync($"{config.CoordinatorUrl}/api/lock/acquire", new LockRequest
                                 {
                                     ProjectId = hbProj,
@@ -330,7 +354,10 @@ namespace RevitDriveConnector.Core.Services
                                     TimeoutSeconds = config.SyncTimeoutSeconds
                                 }, coordCts.Token);
                             }
-                            catch { }
+                            catch
+                            {
+                                MarkCoordinatorUnavailable();
+                            }
                         }
                         return new IpcResponse { RequestId = request.RequestId, Success = hbOk };
 
@@ -385,34 +412,40 @@ namespace RevitDriveConnector.Core.Services
                                 if (!string.IsNullOrWhiteSpace(token))
                                 {
                                     try { await DriveService.ReleaseProjectLockAsync(upProj, token, user, CancellationToken.None); } catch { }
-                                    try
+                                    if (!IsCoordinatorTemporarilySkipped(config.CoordinatorUrl))
                                     {
-                                        using var relCts = new CancellationTokenSource(1500);
-                                        await HttpClient.PostAsJsonAsync($"{config.CoordinatorUrl}/api/lock/release", new
+                                        try
                                         {
-                                            ProjectId = upProj,
-                                            LockToken = token,
-                                            User = user
-                                        }, relCts.Token);
+                                            using var relCts = new CancellationTokenSource(1200);
+                                            await HttpClient.PostAsJsonAsync($"{config.CoordinatorUrl}/api/lock/release", new
+                                            {
+                                                ProjectId = upProj,
+                                                LockToken = token,
+                                                User = user
+                                            }, relCts.Token);
+                                        }
+                                        catch { MarkCoordinatorUnavailable(); }
                                     }
-                                    catch { }
                                 }
                             }
                         }
                         else
                         {
                             await DriveService.ReleaseProjectLockAsync(upProj, token, user, ct);
-                            try
+                            if (!IsCoordinatorTemporarilySkipped(config.CoordinatorUrl))
                             {
-                                using var relCts = new CancellationTokenSource(1500);
-                                await HttpClient.PostAsJsonAsync($"{config.CoordinatorUrl}/api/lock/release", new
+                                try
                                 {
-                                    ProjectId = upProj,
-                                    LockToken = token,
-                                    User = user
-                                }, relCts.Token);
+                                    using var relCts = new CancellationTokenSource(1200);
+                                    await HttpClient.PostAsJsonAsync($"{config.CoordinatorUrl}/api/lock/release", new
+                                    {
+                                        ProjectId = upProj,
+                                        LockToken = token,
+                                        User = user
+                                    }, relCts.Token);
+                                }
+                                catch { MarkCoordinatorUnavailable(); }
                             }
-                            catch { }
                         }
 
                         return new IpcResponse
@@ -457,7 +490,7 @@ namespace RevitDriveConnector.Core.Services
                         var bReq = JsonSerializer.Deserialize<BorrowRequest>(request.PayloadJson);
                         if (bReq != null)
                         {
-                            string pDir = await DriveService.ResolveAndSyncConnectorDirAsync(bReq.ProjectId, pullFromCloud: true, ct);
+                            string pDir = await DriveService.SyncBorrowRequestsFileAsync(bReq.ProjectId, ct);
                             BorrowRequestManager.SendRequest(pDir, bReq);
                             await DriveService.PushConnectorStateToCloudAsync(bReq.ProjectId, pDir, ct);
                             return new IpcResponse { RequestId = request.RequestId, Success = true, DataJson = JsonSerializer.Serialize(bReq) };
@@ -468,7 +501,7 @@ namespace RevitDriveConnector.Core.Services
                         var pUserReq = JsonSerializer.Deserialize<Dictionary<string, string>>(request.PayloadJson);
                         string pProj = pUserReq?["ProjectId"] ?? "";
                         string pUser = pUserReq?["User"] ?? "";
-                        string projCloudDir = await DriveService.ResolveAndSyncConnectorDirAsync(pProj, pullFromCloud: true, ct);
+                        string projCloudDir = await DriveService.SyncBorrowRequestsFileAsync(pProj, ct);
                         var pending = BorrowRequestManager.GetPendingRequestsForUser(projCloudDir, pUser);
                         return new IpcResponse { RequestId = request.RequestId, Success = true, DataJson = JsonSerializer.Serialize(pending) };
 
@@ -477,7 +510,9 @@ namespace RevitDriveConnector.Core.Services
                         string outProj = outReq != null && outReq.TryGetValue("ProjectId", out var opOut) ? opOut : "";
                         string outUser = outReq != null && outReq.TryGetValue("User", out var ouOut) ? ouOut : "";
                         bool skipPull = outReq != null && outReq.TryGetValue("SkipCloudPull", out var spVal) && string.Equals(spVal, "true", StringComparison.OrdinalIgnoreCase);
-                        string outCloudDir = await DriveService.ResolveAndSyncConnectorDirAsync(outProj, pullFromCloud: !skipPull, ct);
+                        string outCloudDir = skipPull
+                            ? await DriveService.ResolveAndSyncConnectorDirAsync(outProj, pullFromCloud: false, ct)
+                            : await DriveService.SyncBorrowRequestsFileAsync(outProj, ct);
                         var outgoing = BorrowRequestManager.GetOutgoingRequestsForUser(outCloudDir, outUser);
                         return new IpcResponse { RequestId = request.RequestId, Success = true, DataJson = JsonSerializer.Serialize(outgoing) };
 
@@ -489,7 +524,7 @@ namespace RevitDriveConnector.Core.Services
                         string rUser = respDto?["User"] ?? "";
                         var statusEnum = rStatus == "Granted" ? BorrowRequestStatus.Granted : BorrowRequestStatus.Denied;
 
-                        string rCloudDir = await DriveService.ResolveAndSyncConnectorDirAsync(rProj, pullFromCloud: true, ct);
+                        string rCloudDir = await DriveService.SyncBorrowRequestsFileAsync(rProj, ct);
                         bool ok = BorrowRequestManager.RespondToRequest(rCloudDir, rId, statusEnum, rUser);
                         if (ok)
                         {
@@ -502,7 +537,7 @@ namespace RevitDriveConnector.Core.Services
                         string cProj = compDto?["ProjectId"] ?? "";
                         string cIdsRaw = compDto?["RequestIds"] ?? "";
                         var cIds = cIdsRaw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-                        string cCloudDir = await DriveService.ResolveAndSyncConnectorDirAsync(cProj, pullFromCloud: true, ct);
+                        string cCloudDir = await DriveService.SyncBorrowRequestsFileAsync(cProj, ct);
                         bool compOk = BorrowRequestManager.MarkRequestsCompleted(cCloudDir, cIds);
                         if (compOk)
                         {

@@ -3,12 +3,11 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
-using System.Threading;
 using System.Threading.Tasks;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Events;
 using Autodesk.Revit.UI;
-using RevitDriveConnector.Addin.UI;
+using Autodesk.Revit.UI.Events;
 using RevitDriveConnector.Core.IPC;
 using RevitDriveConnector.Core.Localization;
 using RevitDriveConnector.Core.Models;
@@ -55,12 +54,19 @@ namespace RevitDriveConnector.Addin.Services
                 var elem = doc.GetElement(elemId);
                 if (elem == null || !LiveElementLockService.ShouldTrackElement(elem)) continue;
 
+                // Se l'utente aveva selezionato esplicitamente altri elementi e questo è solo un giunto adiacente,
+                // evita falsi positivi di blocco su muri/elementi lineari non selezionati
+                if (LiveElementLockService.IsLikelyJoinCascadeInCurrentSelection(doc, elem, modifiedIds))
+                {
+                    continue;
+                }
+
                 if (LiveElementLockService.TryGetRemoteLock(doc, elem.UniqueId, out var lockInfo) && lockInfo != null)
                 {
                     var fm = new FailureMessage(_failureId);
                     fm.SetFailingElement(elemId);
                     doc.PostFailure(fm);
-                    LiveElementLockService.NotifyConflictToast(lockInfo, elem.Category?.Name ?? elem.Name);
+                    LiveElementLockService.NotifyConflictToast(lockInfo);
                     return;
                 }
             }
@@ -74,7 +80,7 @@ namespace RevitDriveConnector.Addin.Services
                     var fm = new FailureMessage(_failureId);
                     fm.SetFailingElement(delId);
                     doc.PostFailure(fm);
-                    LiveElementLockService.NotifyConflictToast(lockInfo, "Elemento");
+                    LiveElementLockService.NotifyConflictToast(lockInfo);
                     return;
                 }
             }
@@ -101,19 +107,46 @@ namespace RevitDriveConnector.Addin.Services
             BuiltInCategory.OST_ScheduleGraphics,
             BuiltInCategory.OST_PropertySet,
             BuiltInCategory.OST_PreviewLegendComponents,
-            BuiltInCategory.OST_SunStudy
+            BuiltInCategory.OST_SunStudy,
+            BuiltInCategory.OST_Dimensions,
+            BuiltInCategory.OST_Constraints,
+            BuiltInCategory.OST_WeakDims,
+            BuiltInCategory.OST_Rooms,
+            BuiltInCategory.OST_RoomTags,
+            BuiltInCategory.OST_RoomSeparationLines,
+            BuiltInCategory.OST_MEPSpaces,
+            BuiltInCategory.OST_Areas,
+            BuiltInCategory.OST_AreaTags,
+            BuiltInCategory.OST_ReferencePoints,
+            BuiltInCategory.OST_CLines,
+            BuiltInCategory.OST_CenterLines,
+            BuiltInCategory.OST_CurtainGrids,
+            BuiltInCategory.OST_DividedSurface
         };
 
-        // Per-document state keyed by Document.GetHashCode() / central path
+        private static readonly HashSet<BuiltInCategory> JoinCascadingCategories = new()
+        {
+            BuiltInCategory.OST_Walls,
+            BuiltInCategory.OST_StructuralFraming,
+            BuiltInCategory.OST_Floors,
+            BuiltInCategory.OST_Roofs,
+            BuiltInCategory.OST_Ceilings,
+            BuiltInCategory.OST_PipeCurves,
+            BuiltInCategory.OST_DuctCurves
+        };
+
         private static readonly ConcurrentDictionary<string, HashSet<string>> LocalDirtyByProject = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, HashSet<string>> SessionAddedByProject = new(StringComparer.OrdinalIgnoreCase);
         private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, RemoteElementLockInfo>> RemoteLocksByProject = new(StringComparer.OrdinalIgnoreCase);
         private static readonly ConcurrentDictionary<string, ConcurrentDictionary<long, string>> ElementIdMapByProject = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, HashSet<long>> RecentSelectionByProject = new(StringComparer.OrdinalIgnoreCase);
         private static readonly object LocalSetLock = new();
 
         private static LiveElementLockUpdater? _updater;
         private static volatile bool _isSyncOrReloadActive = false;
         private static volatile bool _isLiveLockEnabled = true;
 
+        private static DateTime _lastSelectionUtc = DateTime.MinValue;
         private static DateTime _lastRemotePollUtc = DateTime.MinValue;
         private static DateTime _lastLocalPushUtc = DateTime.MinValue;
         private static DateTime _lastEditActivityUtc = DateTime.MinValue;
@@ -196,27 +229,83 @@ namespace RevitDriveConnector.Addin.Services
             }
         }
 
+        public static void OnSelectionChanged(SelectionChangedEventArgs e)
+        {
+            if (!_isLiveLockEnabled || _isSyncOrReloadActive) return;
+
+            try
+            {
+                var doc = e.GetDocument();
+                if (doc == null || !doc.IsWorkshared || doc.IsFamilyDocument) return;
+
+                string centralPath = SynchronizationCoordinator.GetCentralModelPath(doc);
+                if (!SynchronizationCoordinator.IsDriveManagedPath(centralPath)) return;
+
+                string projectId = SynchronizationCoordinator.ExtractProjectName(centralPath);
+                var selected = e.GetSelectedElements();
+
+                var set = new HashSet<long>();
+                if (selected != null)
+                {
+                    foreach (var id in selected)
+                    {
+                        set.Add(id.Value);
+                    }
+                }
+
+                RecentSelectionByProject[projectId] = set;
+                _lastSelectionUtc = DateTime.UtcNow;
+            }
+            catch { }
+        }
+
+        public static bool IsLikelyJoinCascadeInCurrentSelection(Document doc, Element elem, ICollection<ElementId> modifiedIds)
+        {
+            if (elem?.Category == null) return false;
+            if (!Enum.IsDefined(typeof(BuiltInCategory), elem.Category.Id.Value)) return false;
+            var bic = (BuiltInCategory)elem.Category.Id.Value;
+            if (!JoinCascadingCategories.Contains(bic)) return false;
+
+            if ((DateTime.UtcNow - _lastSelectionUtc).TotalSeconds > 15.0) return false;
+
+            string centralPath = SynchronizationCoordinator.GetCentralModelPath(doc);
+            string projectId = SynchronizationCoordinator.ExtractProjectName(centralPath);
+            if (!RecentSelectionByProject.TryGetValue(projectId, out var selectedSet) || selectedSet.Count == 0)
+            {
+                return false;
+            }
+
+            if (selectedSet.Contains(elem.Id.Value))
+            {
+                return false;
+            }
+
+            bool hasSelectionOverlap = modifiedIds.Any(id => selectedSet.Contains(id.Value));
+            return hasSelectionOverlap;
+        }
+
         public static void OnDocumentOpened(Document doc)
         {
-            if (doc == null || !doc.IsWorkshared || doc.IsFamilyDocument) return;
+            if (!_isLiveLockEnabled || doc == null || !doc.IsWorkshared || doc.IsFamilyDocument) return;
 
             string centralPath = SynchronizationCoordinator.GetCentralModelPath(doc);
             if (!SynchronizationCoordinator.IsDriveManagedPath(centralPath)) return;
 
             string projectId = SynchronizationCoordinator.ExtractProjectName(centralPath);
             SeedElementLookupCache(doc, projectId);
-            _lastRemotePollUtc = DateTime.MinValue; // Force prompt fetch on Idling
+            _lastRemotePollUtc = DateTime.MinValue;
         }
 
         public static void SeedElementLookupCache(Document doc, string projectId)
         {
+            if (!_isLiveLockEnabled) return;
             try
             {
                 var map = ElementIdMapByProject.GetOrAdd(projectId, _ => new ConcurrentDictionary<long, string>());
                 var collector = new FilteredElementCollector(doc).WhereElementIsNotElementType();
                 foreach (var elem in collector)
                 {
-                    if (elem != null && elem.Id != null && !string.IsNullOrEmpty(elem.UniqueId))
+                    if (ShouldTrackElement(elem) && elem.Id != null && !string.IsNullOrEmpty(elem.UniqueId))
                     {
                         map[elem.Id.Value] = elem.UniqueId;
                     }
@@ -241,7 +330,10 @@ namespace RevitDriveConnector.Addin.Services
             if (txNames != null && txNames.Any(t =>
                 t.Contains("Synchronize", StringComparison.OrdinalIgnoreCase) ||
                 t.Contains("Reload", StringComparison.OrdinalIgnoreCase) ||
-                t.Contains("Relinquish", StringComparison.OrdinalIgnoreCase)))
+                t.Contains("Relinquish", StringComparison.OrdinalIgnoreCase) ||
+                t.Contains("Drive", StringComparison.OrdinalIgnoreCase) ||
+                t.Contains("Consolida", StringComparison.OrdinalIgnoreCase) ||
+                t.Contains("Auto-Risoluzione", StringComparison.OrdinalIgnoreCase)))
             {
                 return;
             }
@@ -249,11 +341,16 @@ namespace RevitDriveConnector.Addin.Services
             string projectId = SynchronizationCoordinator.ExtractProjectName(centralPath);
             var idMap = ElementIdMapByProject.GetOrAdd(projectId, _ => new ConcurrentDictionary<long, string>());
             var dirtySet = LocalDirtyByProject.GetOrAdd(projectId, _ => new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+            var addedSet = SessionAddedByProject.GetOrAdd(projectId, _ => new HashSet<string>(StringComparer.OrdinalIgnoreCase));
             bool changed = false;
+
+            var modifiedIds = e.GetModifiedElementIds();
+            var addedIds = e.GetAddedElementIds();
+            var deletedIds = e.GetDeletedElementIds();
 
             lock (LocalSetLock)
             {
-                foreach (var id in e.GetAddedElementIds())
+                foreach (var id in addedIds)
                 {
                     var elem = doc.GetElement(id);
                     if (elem == null) continue;
@@ -266,15 +363,17 @@ namespace RevitDriveConnector.Addin.Services
                         if (WorksharingUtils.GetCheckoutStatus(doc, id) != CheckoutStatus.OwnedByCurrentUser)
                         {
                             if (dirtySet.Remove(elem.UniqueId)) changed = true;
+                            addedSet.Remove(elem.UniqueId);
                         }
                     }
                     else
                     {
+                        addedSet.Add(elem.UniqueId);
                         if (dirtySet.Add(elem.UniqueId)) changed = true;
                     }
                 }
 
-                foreach (var id in e.GetModifiedElementIds())
+                foreach (var id in modifiedIds)
                 {
                     var elem = doc.GetElement(id);
                     if (elem == null) continue;
@@ -292,6 +391,11 @@ namespace RevitDriveConnector.Addin.Services
                     }
                     else
                     {
+                        if (IsLikelyJoinCascadeInCurrentSelection(doc, elem, modifiedIds))
+                        {
+                            continue;
+                        }
+
                         if (checkoutStatus == CheckoutStatus.OwnedByCurrentUser)
                         {
                             if (dirtySet.Add(elem.UniqueId)) changed = true;
@@ -299,12 +403,17 @@ namespace RevitDriveConnector.Addin.Services
                     }
                 }
 
-                foreach (var id in e.GetDeletedElementIds())
+                foreach (var id in deletedIds)
                 {
                     if (idMap.TryGetValue(id.Value, out string? uid) && !string.IsNullOrEmpty(uid))
                     {
                         if (e.Operation == UndoOperation.TransactionUndone)
                         {
+                            if (dirtySet.Remove(uid)) changed = true;
+                        }
+                        else if (addedSet.Remove(uid))
+                        {
+                            // Creato ed eliminato prima del Sync: non esiste sul centrale, quindi non va bloccato
                             if (dirtySet.Remove(uid)) changed = true;
                         }
                         else
@@ -334,6 +443,8 @@ namespace RevitDriveConnector.Addin.Services
             List<string> remainingOwned = new();
             lock (LocalSetLock)
             {
+                SessionAddedByProject.TryRemove(projectId, out _);
+
                 if (LocalDirtyByProject.TryGetValue(projectId, out var dirtySet))
                 {
                     var toRemove = new List<string>();
@@ -358,7 +469,7 @@ namespace RevitDriveConnector.Addin.Services
             SeedElementLookupCache(doc, projectId);
             _hasPendingLocalPush = false;
             _lastLocalPushUtc = DateTime.UtcNow;
-            _lastRemotePollUtc = DateTime.MinValue; // Refresh remote locks soon
+            _lastRemotePollUtc = DateTime.MinValue;
 
             _ = Task.Run(async () =>
             {
@@ -392,9 +503,11 @@ namespace RevitDriveConnector.Addin.Services
             lock (LocalSetLock)
             {
                 LocalDirtyByProject.TryRemove(projectId, out _);
+                SessionAddedByProject.TryRemove(projectId, out _);
             }
             RemoteLocksByProject.TryRemove(projectId, out _);
             ElementIdMapByProject.TryRemove(projectId, out _);
+            RecentSelectionByProject.TryRemove(projectId, out _);
             _hasPendingLocalPush = false;
 
             _ = Task.Run(async () =>
@@ -564,7 +677,7 @@ namespace RevitDriveConnector.Addin.Services
             return false;
         }
 
-        public static void NotifyConflictToast(RemoteElementLockInfo lockInfo, string elemLabel)
+        public static void NotifyConflictToast(RemoteElementLockInfo lockInfo)
         {
             var now = DateTime.UtcNow;
             if ((now - _lastToastShownUtc).TotalSeconds < 2.0) return;

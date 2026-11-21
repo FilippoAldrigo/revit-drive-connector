@@ -11,22 +11,27 @@ Write-Host "--- 1. Arresto processi RevitDriveConnector di sfondo ---" -Foregrou
 Get-Process -Name "*RevitDriveConnector*" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -like "*Setup*" -and $_.Path -like "*RevitDriveConnector*" } | Stop-Process -Force -ErrorAction SilentlyContinue
 
-Write-Host "--- 2. Compilazione Progetti di Base (Core, Daemon, Server, Addin) ---" -ForegroundColor Cyan
+Write-Host "--- 2. Compilazione Progetti di Base (Core, Daemon, Server, Addin .NET 8/10) ---" -ForegroundColor Cyan
 $binDir = Join-Path $root "dist\payload\bin"
+if (Test-Path $binDir) { Remove-Item $binDir -Force -Recurse }
 New-Item -ItemType Directory -Path $binDir -Force | Out-Null
+$binNet8Dir = Join-Path $binDir "net8"
+$binNet10Dir = Join-Path $binDir "net10"
+New-Item -ItemType Directory -Path $binNet8Dir -Force | Out-Null
+New-Item -ItemType Directory -Path $binNet10Dir -Force | Out-Null
 
 & $DotnetCmd build "$root\RevitDriveConnector.slnx" -c Release
+if ($LASTEXITCODE -ne 0) { throw "Errore durante la compilazione di RevitDriveConnector.slnx!" }
 
 Copy-Item "$root\src\RevitDriveConnector.Core\bin\Release\net8.0\*" $binDir -Force -Recurse
 Copy-Item "$root\src\RevitDriveConnector.Daemon\bin\Release\net8.0\*" $binDir -Force -Recurse
 Copy-Item "$root\src\RevitDriveConnector.Server\bin\Release\net8.0\*" $binDir -Force -Recurse
 Copy-Item "$root\src\RevitDriveConnector.Addin\bin\Release\net10.0-windows\*" $binDir -Force -Recurse
+Copy-Item "$root\src\RevitDriveConnector.Addin\bin\Release\net10.0-windows\*" $binNet10Dir -Force -Recurse
+Copy-Item "$root\src\RevitDriveConnector.Addin\bin\Release\net8.0-windows\*" $binNet8Dir -Force -Recurse
 
 # Esclude credentials.json dal pacchetto pubblico (ogni utente/studio configura il proprio)
-$binCreds = Join-Path $binDir "credentials.json"
-if (Test-Path $binCreds) {
-    Remove-Item $binCreds -Force
-}
+Get-ChildItem -Path $binDir -Filter "credentials.json" -Recurse | Remove-Item -Force -ErrorAction SilentlyContinue
 
 Write-Host "--- 3. Creazione payload.zip per Installer ---" -ForegroundColor Cyan
 $resDir = Join-Path $root "src\RevitDriveConnector.Installer\Resources"

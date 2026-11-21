@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0-windows</TargetFramework>
+    <TargetFrameworks>net8.0-windows;net10.0-windows</TargetFrameworks>
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <LangVersion>latest</LangVersion>
@@ -12,19 +12,28 @@
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
 
-  <ItemGroup>
-    <Reference Include="RevitAPI">
+  <ItemGroup Condition="'$(TargetFramework)' == 'net8.0-windows'">
+    <PackageReference Include="Nice3point.Revit.Api.RevitAPI" Version="2025.4.60" ExcludeAssets="runtime" />
+    <PackageReference Include="Nice3point.Revit.Api.RevitAPIUI" Version="2025.4.60" ExcludeAssets="runtime" />
+    <PackageReference Include="Nice3point.Revit.Api.AdWindows" Version="2025.4.60" ExcludeAssets="runtime" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0-windows'">
+    <Reference Include="RevitAPI" Condition="Exists('C:\Program Files\Autodesk\Revit 2027\RevitAPI.dll')">
       <HintPath>C:\Program Files\Autodesk\Revit 2027\RevitAPI.dll</HintPath>
       <Private>False</Private>
     </Reference>
-    <Reference Include="RevitAPIUI">
+    <Reference Include="RevitAPIUI" Condition="Exists('C:\Program Files\Autodesk\Revit 2027\RevitAPIUI.dll')">
       <HintPath>C:\Program Files\Autodesk\Revit 2027\RevitAPIUI.dll</HintPath>
       <Private>False</Private>
     </Reference>
-    <Reference Include="AdWindows">
+    <Reference Include="AdWindows" Condition="Exists('C:\Program Files\Autodesk\Revit 2027\AdWindows.dll')">
       <HintPath>C:\Program Files\Autodesk\Revit 2027\AdWindows.dll</HintPath>
       <Private>False</Private>
     </Reference>
+    <PackageReference Include="Nice3point.Revit.Api.RevitAPI" Version="2027.4.0" ExcludeAssets="runtime" Condition="!Exists('C:\Program Files\Autodesk\Revit 2027\RevitAPI.dll')" />
+    <PackageReference Include="Nice3point.Revit.Api.RevitAPIUI" Version="2027.4.0" ExcludeAssets="runtime" Condition="!Exists('C:\Program Files\Autodesk\Revit 2027\RevitAPIUI.dll')" />
+    <PackageReference Include="Nice3point.Revit.Api.AdWindows" Version="2027.4.0" ExcludeAssets="runtime" Condition="!Exists('C:\Program Files\Autodesk\Revit 2027\AdWindows.dll')" />
   </ItemGroup>
 
   <ItemGroup>

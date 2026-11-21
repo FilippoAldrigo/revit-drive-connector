@@ -97,10 +97,11 @@ namespace RevitDriveConnector.Addin.UI
                     }
                 }
 
+                var outgoingPayload = JsonSerializer.Serialize(new { ProjectId = _projectId, User = _username, SkipCloudPull = "true" });
                 var respOut = await _ipcClient.SendRequestAsync(new IpcRequest
                 {
                     Command = IpcCommand.GetOutgoingBorrowRequests,
-                    PayloadJson = payload
+                    PayloadJson = outgoingPayload
                 });
 
                 if (respOut.Success && !string.IsNullOrEmpty(respOut.DataJson))

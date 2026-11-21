@@ -361,7 +361,7 @@ namespace RevitDriveConnector.Core.Localization
  ["Sync_Success"] = new() { ["it"] = "Modifiche sincronizzate localmente e caricate con successo su Google Drive!", ["en"] = "Changes synchronized locally and successfully uploaded to Google Drive!" },
  ["Sync_Error"] = new() { ["it"] = "Sincronizzazione interrotta o fallita:\n{0}", ["en"] = "Synchronization interrupted or failed:\n{0}" },
  ["Status_Title"] = new() { ["it"] = "Stato Drive Connector & Sincronizzazione", ["en"] = "Drive Connector & Sync Status" },
- ["Status_Main"] = new() { ["it"] = "Google Drive Connector v1.0 - Stato del Sistema", ["en"] = "Google Drive Connector v1.0 - System Status" },
+ ["Status_Main"] = new() { ["it"] = "Google Drive Connector - Stato del Sistema", ["en"] = "Google Drive Connector - System Status" },
  ["Status_ForceUnlock"] = new() { ["it"] = "Verifica o Rimuovi Lock di Sincronizzazione (Force Unlock)", ["en"] = "Check or Remove Sync Lock (Force Unlock)" },
  ["Status_ForceUnlockDesc"] = new() { ["it"] = "Rimuove forzatamente eventuali lock orfani lasciati da crash o blackout improvvisi di un PC del team.", ["en"] = "Forcefully removes orphan locks left by crashes or sudden shutdowns." },
  ["Borrow_SelectElement"] = new() { ["it"] = "Seleziona almeno un elemento nella vista (muro, porta, finestra, ecc.) prima di cliccare.", ["en"] = "Please select at least one element in the view first." },

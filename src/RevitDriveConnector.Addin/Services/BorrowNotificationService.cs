@@ -177,7 +177,7 @@ namespace RevitDriveConnector.Addin.Services
             {
                 Command = IpcCommand.GetPendingBorrowRequests,
                 PayloadJson = payload
-            }, timeoutMs: 3000);
+            }, timeoutMs: 8000);
 
             if (respInc.Success && !string.IsNullOrEmpty(respInc.DataJson))
             {

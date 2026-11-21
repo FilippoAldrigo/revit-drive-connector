@@ -138,6 +138,9 @@ namespace RevitDriveConnector.Core.Services
         private string _connectedEmail = string.Empty;
         private readonly ConcurrentDictionary<string, string> _liveEditsUploadFileIds = new(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, (DateTimeOffset? ModifiedTime, UserLiveEditsState State)> _remoteLiveEditsCache = new(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<string, string> _projectFolderIdCache = new(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<string, string> _subfolderIdCache = new(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<string, (DateTimeOffset? ModifiedTime, string Md5)> _borrowRequestsMetaCache = new(StringComparer.OrdinalIgnoreCase);
 
         private bool HasAuth => _credential != null || _customTokenProvider != null;
         public bool IsNativeGoogleDriveConnected => HasAuth;
@@ -461,6 +464,11 @@ namespace RevitDriveConnector.Core.Services
         {
             _credential = null;
             _connectedEmail = string.Empty;
+            _projectFolderIdCache.Clear();
+            _subfolderIdCache.Clear();
+            _liveEditsUploadFileIds.Clear();
+            _remoteLiveEditsCache.Clear();
+            _borrowRequestsMetaCache.Clear();
             try
             {
                 if (Directory.Exists(TokenStorePath))
@@ -493,6 +501,49 @@ namespace RevitDriveConnector.Core.Services
             }
         }
 
+        private static bool IsTransientStatusCode(System.Net.HttpStatusCode code)
+        {
+            int status = (int)code;
+            return status == 429 || status == 500 || status == 502 || status == 503 || status == 504;
+        }
+
+        private async Task<HttpResponseMessage> SendAuthorizedWithRetryAsync(
+            HttpMethod method,
+            string url,
+            HttpCompletionOption completionOption,
+            CancellationToken ct)
+        {
+            int[] delaysMs = { 400, 1000, 2200 };
+            for (int attempt = 0; attempt <= delaysMs.Length; attempt++)
+            {
+                using var req = await CreateAuthorizedRequestAsync(method, url, ct);
+                HttpResponseMessage? resp = null;
+                try
+                {
+                    resp = await _http.SendAsync(req, completionOption, ct);
+                    if (resp.IsSuccessStatusCode || !IsTransientStatusCode(resp.StatusCode) || attempt == delaysMs.Length)
+                    {
+                        return resp;
+                    }
+
+                    int waitMs = delaysMs[attempt];
+                    if (resp.Headers.RetryAfter?.Delta is TimeSpan delta && delta.TotalMilliseconds > 0 && delta.TotalSeconds <= 15)
+                    {
+                        waitMs = (int)delta.TotalMilliseconds;
+                    }
+                    resp.Dispose();
+                    await Task.Delay(waitMs, ct);
+                }
+                catch (HttpRequestException) when (attempt < delaysMs.Length)
+                {
+                    resp?.Dispose();
+                    await Task.Delay(delaysMs[attempt], ct);
+                }
+            }
+
+            throw new HttpRequestException($"Richiesta HTTP fallita dopo i tentativi di retry: {url}");
+        }
+
         private async Task<List<DriveFileItem>> DriveListFilesAsync(string query, string fields, int pageSize = 100, CancellationToken ct = default)
         {
             var allFiles = new List<DriveFileItem>();
@@ -508,8 +559,7 @@ namespace RevitDriveConnector.Core.Services
                     url += $"&pageToken={Uri.EscapeDataString(pageToken)}";
                 }
 
-                using var req = await CreateAuthorizedRequestAsync(HttpMethod.Get, url, ct);
-                using var resp = await _http.SendAsync(req, ct);
+                using var resp = await SendAuthorizedWithRetryAsync(HttpMethod.Get, url, HttpCompletionOption.ResponseContentRead, ct);
                 resp.EnsureSuccessStatusCode();
                 string json = await resp.Content.ReadAsStringAsync(ct);
                 var parsed = JsonSerializer.Deserialize<DriveFileListResponse>(json);
@@ -531,8 +581,7 @@ namespace RevitDriveConnector.Core.Services
         private async Task<DriveFileItem?> DriveGetFileMetadataAsync(string fileId, string fields, CancellationToken ct = default)
         {
             string url = $"https://www.googleapis.com/drive/v3/files/{Uri.EscapeDataString(fileId)}?fields={Uri.EscapeDataString(fields)}&supportsAllDrives=true";
-            using var req = await CreateAuthorizedRequestAsync(HttpMethod.Get, url, ct);
-            using var resp = await _http.SendAsync(req, ct);
+            using var resp = await SendAuthorizedWithRetryAsync(HttpMethod.Get, url, HttpCompletionOption.ResponseContentRead, ct);
             resp.EnsureSuccessStatusCode();
             string json = await resp.Content.ReadAsStringAsync(ct);
             return JsonSerializer.Deserialize<DriveFileItem>(json);
@@ -541,9 +590,13 @@ namespace RevitDriveConnector.Core.Services
         private async Task DriveDownloadFileAsync(string fileId, Stream destination, CancellationToken ct = default)
         {
             string url = $"https://www.googleapis.com/drive/v3/files/{Uri.EscapeDataString(fileId)}?alt=media&supportsAllDrives=true";
-            using var req = await CreateAuthorizedRequestAsync(HttpMethod.Get, url, ct);
-            using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+            using var resp = await SendAuthorizedWithRetryAsync(HttpMethod.Get, url, HttpCompletionOption.ResponseHeadersRead, ct);
             resp.EnsureSuccessStatusCode();
+            if (destination.CanSeek)
+            {
+                destination.SetLength(0);
+                destination.Position = 0;
+            }
             using var contentStream = await resp.Content.ReadAsStreamAsync(ct);
             await contentStream.CopyToAsync(destination, 81920, ct);
         }
@@ -850,72 +903,95 @@ namespace RevitDriveConnector.Core.Services
             if (HasAuth)
             {
                 var seenFolderIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var listLock = new object();
+                using var scanSem = new SemaphoreSlim(6);
 
                 try
                 {
-                    // 2a. Ricerca tramite manifest.json accessibili
+                    // 2a. Ricerca tramite manifest.json accessibili (in parallelo)
                     var manifestFiles = await DriveListFilesAsync(
                         "name = 'manifest.json' and trashed = false",
                         "id,name,parents,owners,shared,modifiedTime",
                         200,
                         ct);
 
-                    foreach (var mf in manifestFiles)
-                    {
-                        if (mf.Parents == null || mf.Parents.Count == 0) continue;
-                        string parentFolderId = mf.Parents[0];
-                        if (!seenFolderIds.Add(parentFolderId)) continue;
-
-                        try
+                    var manifestTasks = manifestFiles
+                        .Where(mf => mf.Parents != null && mf.Parents.Count > 0 && seenFolderIds.Add(mf.Parents[0]))
+                        .Select(async mf =>
                         {
-                            var projectFolder = await DriveGetFileMetadataAsync(parentFolderId, "id,name,owners,shared,modifiedTime", ct);
-                            if (projectFolder == null) continue;
+                            string parentFolderId = mf.Parents![0];
+                            await scanSem.WaitAsync(ct);
+                            try
+                            {
+                                var folderTask = DriveGetFileMetadataAsync(parentFolderId, "id,name,owners,shared,modifiedTime", ct);
+                                var manifestTask = TryDownloadManifestAsync(mf.Id, ct);
+                                await Task.WhenAll(folderTask, manifestTask);
 
-                            var cloudManifest = await TryDownloadManifestAsync(mf.Id, ct);
-                            MergeOrAddCloudProject(list, projectFolder, cloudManifest);
-                        }
-                        catch (Exception fEx)
-                        {
-                            Console.WriteLine($"[GoogleDriveService] Avviso lettura cartella cloud {parentFolderId}: {fEx.Message}");
-                        }
-                    }
+                                var projectFolder = folderTask.Result;
+                                if (projectFolder == null) return;
+
+                                _projectFolderIdCache[projectFolder.Name] = projectFolder.Id;
+                                lock (listLock)
+                                {
+                                    MergeOrAddCloudProject(list, projectFolder, manifestTask.Result);
+                                }
+                            }
+                            catch (Exception fEx)
+                            {
+                                Console.WriteLine($"[GoogleDriveService] Avviso lettura cartella cloud {parentFolderId}: {fEx.Message}");
+                            }
+                            finally
+                            {
+                                scanSem.Release();
+                            }
+                        });
+                    await Task.WhenAll(manifestTasks);
 
                     // 2b. Ricerca esplicita delle cartelle in "Condivisi con me" (sharedWithMe = true)
-                    //     Garantisce il rilevamento anche se Google non ha indicizzato manifest.json per il collaboratore
                     var sharedFolders = await DriveListFilesAsync(
                         "sharedWithMe = true and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
                         "id,name,owners,shared,modifiedTime",
                         100,
                         ct);
 
-                    foreach (var folder in sharedFolders)
-                    {
-                        if (seenFolderIds.Contains(folder.Id)) continue;
-
-                        try
+                    var sharedTasks = sharedFolders
+                        .Where(folder => !seenFolderIds.Contains(folder.Id))
+                        .Select(async folder =>
                         {
-                            var markers = await DriveListFilesAsync(
-                                $"'{folder.Id}' in parents and (name = 'manifest.json' or (name = 'Central' and mimeType = 'application/vnd.google-apps.folder')) and trashed = false",
-                                "id,name,mimeType,modifiedTime",
-                                10,
-                                ct);
+                            await scanSem.WaitAsync(ct);
+                            try
+                            {
+                                var markers = await DriveListFilesAsync(
+                                    $"'{folder.Id}' in parents and (name = 'manifest.json' or (name = 'Central' and mimeType = 'application/vnd.google-apps.folder')) and trashed = false",
+                                    "id,name,mimeType,modifiedTime",
+                                    10,
+                                    ct);
 
-                            if (markers.Count == 0) continue;
+                                if (markers.Count == 0) return;
 
-                            seenFolderIds.Add(folder.Id);
-                            var mf = markers
-                                .Where(m => string.Equals(m.Name, "manifest.json", StringComparison.OrdinalIgnoreCase))
-                                .OrderByDescending(m => m.ModifiedTime ?? DateTimeOffset.MinValue)
-                                .FirstOrDefault();
+                                lock (listLock) { seenFolderIds.Add(folder.Id); }
+                                var mf = markers
+                                    .Where(m => string.Equals(m.Name, "manifest.json", StringComparison.OrdinalIgnoreCase))
+                                    .OrderByDescending(m => m.ModifiedTime ?? DateTimeOffset.MinValue)
+                                    .FirstOrDefault();
 
-                            var cloudManifest = mf != null ? await TryDownloadManifestAsync(mf.Id, ct) : null;
-                            MergeOrAddCloudProject(list, folder, cloudManifest, forceSharedWithMe: true);
-                        }
-                        catch (Exception sEx)
-                        {
-                            Console.WriteLine($"[GoogleDriveService] Avviso scansione cartella condivisa '{folder.Name}': {sEx.Message}");
-                        }
-                    }
+                                var cloudManifest = mf != null ? await TryDownloadManifestAsync(mf.Id, ct) : null;
+                                _projectFolderIdCache[folder.Name] = folder.Id;
+                                lock (listLock)
+                                {
+                                    MergeOrAddCloudProject(list, folder, cloudManifest, forceSharedWithMe: true);
+                                }
+                            }
+                            catch (Exception sEx)
+                            {
+                                Console.WriteLine($"[GoogleDriveService] Avviso scansione cartella condivisa '{folder.Name}': {sEx.Message}");
+                            }
+                            finally
+                            {
+                                scanSem.Release();
+                            }
+                        });
+                    await Task.WhenAll(sharedTasks);
 
                     // 2c. Ricerca scorciatoie e sottocartelle nella cartella RevitProjects dell'utente
                     var revitProjectsFolders = await DriveListFilesAsync(
@@ -933,37 +1009,46 @@ namespace RevitDriveConnector.Core.Services
                             100,
                             ct);
 
-                        foreach (var child in children)
-                        {
-                            string targetId = (child.MimeType == "application/vnd.google-apps.shortcut" && !string.IsNullOrEmpty(child.ShortcutDetails?.TargetId))
+                        var childTasks = children
+                            .Select(child => (child.MimeType == "application/vnd.google-apps.shortcut" && !string.IsNullOrEmpty(child.ShortcutDetails?.TargetId))
                                 ? child.ShortcutDetails.TargetId
-                                : child.Id;
-
-                            if (!seenFolderIds.Add(targetId)) continue;
-
-                            try
+                                : child.Id)
+                            .Where(targetId => seenFolderIds.Add(targetId))
+                            .Select(async targetId =>
                             {
-                                var targetFolder = await DriveGetFileMetadataAsync(targetId, "id,name,owners,shared,modifiedTime", ct);
-                                if (targetFolder == null) continue;
+                                await scanSem.WaitAsync(ct);
+                                try
+                                {
+                                    var targetFolder = await DriveGetFileMetadataAsync(targetId, "id,name,owners,shared,modifiedTime", ct);
+                                    if (targetFolder == null) return;
 
-                                var markers = await DriveListFilesAsync(
-                                    $"'{targetId}' in parents and (name = 'manifest.json' or (name = 'Central' and mimeType = 'application/vnd.google-apps.folder')) and trashed = false",
-                                    "id,name,mimeType,modifiedTime",
-                                    10,
-                                    ct);
+                                    var markers = await DriveListFilesAsync(
+                                        $"'{targetId}' in parents and (name = 'manifest.json' or (name = 'Central' and mimeType = 'application/vnd.google-apps.folder')) and trashed = false",
+                                        "id,name,mimeType,modifiedTime",
+                                        10,
+                                        ct);
 
-                                if (markers.Count == 0) continue;
+                                    if (markers.Count == 0) return;
 
-                                var mf = markers
-                                    .Where(m => string.Equals(m.Name, "manifest.json", StringComparison.OrdinalIgnoreCase))
-                                    .OrderByDescending(m => m.ModifiedTime ?? DateTimeOffset.MinValue)
-                                    .FirstOrDefault();
+                                    var mf = markers
+                                        .Where(m => string.Equals(m.Name, "manifest.json", StringComparison.OrdinalIgnoreCase))
+                                        .OrderByDescending(m => m.ModifiedTime ?? DateTimeOffset.MinValue)
+                                        .FirstOrDefault();
 
-                                var cloudManifest = mf != null ? await TryDownloadManifestAsync(mf.Id, ct) : null;
-                                MergeOrAddCloudProject(list, targetFolder, cloudManifest);
-                            }
-                            catch { }
-                        }
+                                    var cloudManifest = mf != null ? await TryDownloadManifestAsync(mf.Id, ct) : null;
+                                    _projectFolderIdCache[targetFolder.Name] = targetFolder.Id;
+                                    lock (listLock)
+                                    {
+                                        MergeOrAddCloudProject(list, targetFolder, cloudManifest);
+                                    }
+                                }
+                                catch { }
+                                finally
+                                {
+                                    scanSem.Release();
+                                }
+                            });
+                        await Task.WhenAll(childTasks);
                     }
                 }
                 catch (Exception ex)
@@ -2731,16 +2816,24 @@ namespace RevitDriveConnector.Core.Services
         {
             if (!HasAuth) return null;
 
+            string cacheKey = $"{parentFolderId}::{subFolderName}";
+            if (_subfolderIdCache.TryGetValue(cacheKey, out string? cachedSubId) && !string.IsNullOrEmpty(cachedSubId))
+            {
+                return cachedSubId;
+            }
+
             string query = $"'{parentFolderId}' in parents and name = '{subFolderName.Replace("'", "\\'")}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false";
             var files = await DriveListFilesAsync(query, "id,name,createdTime,modifiedTime", 20, ct);
 
             if (files.Count > 0)
             {
-                return files
+                string canonicalId = files
                     .OrderBy(f => f.CreatedTime ?? f.ModifiedTime ?? DateTimeOffset.MaxValue)
                     .ThenBy(f => f.Id, StringComparer.Ordinal)
                     .First()
                     .Id;
+                _subfolderIdCache[cacheKey] = canonicalId;
+                return canonicalId;
             }
 
             if (!createIfMissing) return null;
@@ -2765,10 +2858,12 @@ namespace RevitDriveConnector.Core.Services
                 if (!string.Equals(canonical.Id, created.Id, StringComparison.Ordinal))
                 {
                     try { await DriveDeleteFileAsync(created.Id, ct); } catch { }
+                    _subfolderIdCache[cacheKey] = canonical.Id;
                     return canonical.Id;
                 }
             }
 
+            _subfolderIdCache[cacheKey] = created.Id;
             return created.Id;
         }
 
@@ -2783,9 +2878,18 @@ namespace RevitDriveConnector.Core.Services
                 {
                     var mJson = await File.ReadAllTextAsync(localManifest, ct);
                     var m = JsonSerializer.Deserialize<ProjectManifest>(mJson);
-                    if (!string.IsNullOrEmpty(m?.CloudFolderId)) return m.CloudFolderId;
+                    if (!string.IsNullOrEmpty(m?.CloudFolderId))
+                    {
+                        _projectFolderIdCache[projectName] = m.CloudFolderId;
+                        return m.CloudFolderId;
+                    }
                 }
                 catch { }
+            }
+
+            if (_projectFolderIdCache.TryGetValue(projectName, out string? cachedProjId) && !string.IsNullOrEmpty(cachedProjId))
+            {
+                return cachedProjId;
             }
 
             try
@@ -2803,20 +2907,94 @@ namespace RevitDriveConnector.Core.Services
                     {
                         if (f.MimeType == "application/vnd.google-apps.shortcut" && !string.IsNullOrEmpty(f.ShortcutDetails?.TargetId))
                         {
+                            _projectFolderIdCache[projectName] = f.ShortcutDetails.TargetId;
                             return f.ShortcutDetails.TargetId;
                         }
                     }
                     var target = files.FirstOrDefault(f => f.Shared == true) ?? files[0];
+                    _projectFolderIdCache[projectName] = target.Id;
                     return target.Id;
                 }
 
-                return createIfMissing ? await EnsureCloudProjectFolderExistsAsync(projectName, ct) : null;
+                string? ensuredId = createIfMissing ? await EnsureCloudProjectFolderExistsAsync(projectName, ct) : null;
+                if (!string.IsNullOrEmpty(ensuredId))
+                {
+                    _projectFolderIdCache[projectName] = ensuredId;
+                }
+                return ensuredId;
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"[GoogleDriveService] Errore ricerca cartella '{projectName}': {ex.Message}");
                 return null;
             }
+        }
+
+        /// <summary>
+        /// Sincronizza in modo mirato e leggero SOLO borrow_requests.json evitando di riscaricare tutta la cartella .connector ad ogni tick.
+        /// </summary>
+        public async Task<string> SyncBorrowRequestsFileAsync(string projectName, CancellationToken ct = default)
+        {
+            ReloadConfig();
+            if (!HasAuth)
+            {
+                await InitializeAsync(ct);
+            }
+
+            string? cloudFolderId = HasAuth ? await GetProjectFolderIdAsync(projectName, createIfMissing: false, ct) : null;
+            string remoteProjectDir = DriveShortcutResolver.ResolveProjectDirectory(_config.CloudStoragePath, projectName, cloudFolderId);
+            string connectorDir = Path.Combine(remoteProjectDir, ".connector");
+            Directory.CreateDirectory(connectorDir);
+
+            if (HasAuth && !string.IsNullOrEmpty(cloudFolderId))
+            {
+                try
+                {
+                    string? cloudConnectorId = await GetSubfolderIdAsync(cloudFolderId, ".connector", createIfMissing: false, ct);
+                    if (!string.IsNullOrEmpty(cloudConnectorId))
+                    {
+                        var items = await DriveListFilesAsync(
+                            $"'{cloudConnectorId}' in parents and name = 'borrow_requests.json' and trashed = false",
+                            "id,name,md5Checksum,modifiedTime",
+                            10,
+                            ct);
+
+                        var latest = items.OrderByDescending(f => f.ModifiedTime ?? DateTimeOffset.MinValue).FirstOrDefault();
+                        if (latest != null)
+                        {
+                            string targetFile = Path.Combine(connectorDir, "borrow_requests.json");
+                            bool unchanged = File.Exists(targetFile) &&
+                                             _borrowRequestsMetaCache.TryGetValue(projectName, out var cached) &&
+                                             cached.ModifiedTime == latest.ModifiedTime &&
+                                             string.Equals(cached.Md5, latest.Md5Checksum ?? "", StringComparison.OrdinalIgnoreCase);
+
+                            if (!unchanged)
+                            {
+                                string temp = targetFile + ".dl." + Guid.NewGuid().ToString("N");
+                                try
+                                {
+                                    using (var fs = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
+                                    {
+                                        await DriveDownloadFileAsync(latest.Id, fs, ct);
+                                    }
+                                    File.Move(temp, targetFile, true);
+                                    _borrowRequestsMetaCache[projectName] = (latest.ModifiedTime, latest.Md5Checksum ?? "");
+                                }
+                                finally
+                                {
+                                    if (File.Exists(temp)) try { File.Delete(temp); } catch { }
+                                }
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                    _subfolderIdCache.TryRemove($"{cloudFolderId}::.connector", out _);
+                }
+            }
+
+            return remoteProjectDir;
         }
 
         public async Task<string?> EnsureCloudProjectFolderExistsAsync(string projectName, CancellationToken ct = default)

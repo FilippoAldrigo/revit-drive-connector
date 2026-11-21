@@ -55,6 +55,7 @@ namespace RevitDriveConnector.Addin
                 application.ControlledApplication.DocumentChanged += OnDocumentChanged;
                 application.ControlledApplication.DocumentOpened += OnDocumentOpened;
                 application.ControlledApplication.DocumentClosing += SynchronizationCoordinator.OnDocumentClosing;
+                application.SelectionChanged += OnSelectionChanged;
 
                 // Registra Idling per notifiche push "Live Toast" delle richieste di prestito
                 application.Idling += OnIdling;
@@ -89,7 +90,15 @@ namespace RevitDriveConnector.Addin
                 if (isDriveManaged)
                 {
                     // Auto-risoluzione dei collegamenti mancanti cercando nella cartella Links di Google Drive
-                    ExternalLinkManagerService.AutoHealMissingLinks(e.Document);
+                    try
+                    {
+                        LiveElementLockService.IsSyncOrReloadActive = true;
+                        ExternalLinkManagerService.AutoHealMissingLinks(e.Document);
+                    }
+                    finally
+                    {
+                        LiveElementLockService.IsSyncOrReloadActive = false;
+                    }
                 }
 
                 // Se è un modello locale gestito da Drive Connector, pianifichiamo un allineamento cloud + ReloadLatest su Idling
@@ -111,6 +120,11 @@ namespace RevitDriveConnector.Addin
         private void OnDocumentChanged(object? sender, DocumentChangedEventArgs e)
         {
             LiveElementLockService.OnDocumentChanged(e);
+        }
+
+        private void OnSelectionChanged(object? sender, Autodesk.Revit.UI.Events.SelectionChangedEventArgs e)
+        {
+            LiveElementLockService.OnSelectionChanged(e);
         }
 
         private void OnDocumentReloadedLatest(object? sender, DocumentReloadedLatestEventArgs e)
@@ -194,6 +208,7 @@ namespace RevitDriveConnector.Addin
                 application.ControlledApplication.DocumentChanged -= OnDocumentChanged;
                 application.ControlledApplication.DocumentOpened -= OnDocumentOpened;
                 application.ControlledApplication.DocumentClosing -= SynchronizationCoordinator.OnDocumentClosing;
+                application.SelectionChanged -= OnSelectionChanged;
 
                 application.Idling -= OnIdling;
                 BorrowNotificationService.ClearSession();
@@ -215,6 +230,11 @@ namespace RevitDriveConnector.Addin
             if (!string.IsNullOrEmpty(assemblyDir))
             {
                 candidates.Add(Path.Combine(assemblyDir, "RevitDriveConnector.Daemon.exe"));
+                string? parentDir = Directory.GetParent(assemblyDir)?.FullName;
+                if (!string.IsNullOrEmpty(parentDir))
+                {
+                    candidates.Add(Path.Combine(parentDir, "RevitDriveConnector.Daemon.exe"));
+                }
             }
 
             string appDataBin = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RevitDriveConnector", "bin", "RevitDriveConnector.Daemon.exe");

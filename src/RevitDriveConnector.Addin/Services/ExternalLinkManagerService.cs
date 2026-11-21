@@ -158,6 +158,9 @@ namespace RevitDriveConnector.Addin.Services
                 return (0, 0, errors);
             }
 
+            LiveElementLockService.IsSyncOrReloadActive = true;
+            try
+            {
             using (var trans = new Transaction(doc, "Consolida Collegamenti Drive"))
             {
                 trans.Start();
@@ -221,7 +224,8 @@ namespace RevitDriveConnector.Addin.Services
                         }
                         else
                         {
-                            consolidated++;
+                            failed++;
+                            errors.Add($"Tipo collegamento '{fileName}' ({elem?.GetType().Name ?? "Sconosciuto"}) non supporta il ricaricamento automatico.");
                         }
                     }
                     catch (Exception ex)
@@ -232,6 +236,11 @@ namespace RevitDriveConnector.Addin.Services
                 }
 
                 trans.Commit();
+            }
+            }
+            finally
+            {
+                LiveElementLockService.IsSyncOrReloadActive = false;
             }
 
             return (consolidated, failed, errors);

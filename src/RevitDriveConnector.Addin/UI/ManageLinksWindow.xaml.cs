@@ -67,6 +67,7 @@ namespace RevitDriveConnector.Addin.UI
                     AlertBanner.Visibility = System.Windows.Visibility.Collapsed;
                     TxtStatus.Text = Loc.Format("Links_AllCompliant", links.Count);
                     TxtStatus.Foreground = System.Windows.Media.Brushes.Green;
+                    BtnConsolidate.IsEnabled = false;
                 }
             }
             catch (Exception ex)
@@ -81,7 +82,7 @@ namespace RevitDriveConnector.Addin.UI
             RefreshLinks();
         }
 
-        private void BtnConsolidate_Click(object sender, RoutedEventArgs e)
+        private async void BtnConsolidate_Click(object sender, RoutedEventArgs e)
         {
             BtnConsolidate.IsEnabled = false;
             TxtStatus.Text = "Consolidating links to Drive...";
@@ -103,7 +104,8 @@ namespace RevitDriveConnector.Addin.UI
                         string linksDir = System.IO.Path.Combine(ExternalLinkManagerService.GetProjectBaseDirectory(_doc), "Links");
                         if (System.IO.Directory.Exists(linksDir))
                         {
-                            _ = Task.Run(() => IpcClient.SendRequestAsync(new IpcRequest
+                            TxtStatus.Text = "Caricamento collegamenti su Google Drive in corso...";
+                            var upResp = await IpcClient.SendRequestAsync(new IpcRequest
                             {
                                 Command = IpcCommand.UploadProjectLinks,
                                 PayloadJson = JsonSerializer.Serialize(new
@@ -111,7 +113,13 @@ namespace RevitDriveConnector.Addin.UI
                                     ProjectId = projectId,
                                     LinksDir = linksDir
                                 })
-                            }, timeoutMs: 60000));
+                            }, timeoutMs: 120000);
+
+                            if (!upResp.Success)
+                            {
+                                failed++;
+                                errors.Add($"Upload collegamenti su Google Drive non riuscito: {upResp.ErrorMessage}");
+                            }
                         }
                     }
                 }

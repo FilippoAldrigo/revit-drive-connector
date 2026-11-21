@@ -43,6 +43,10 @@ namespace RevitDriveConnector.Core.Utils
 
  try
  {
+ if ((DateTime.UtcNow - _lastSyncUtc).TotalMinutes <= 15)
+ {
+ return _clockOffset;
+ }
  DateTime? authoritativeUtc = null;
 
  // 1. Tentativo con server NTP (pool.ntp.org o time.google.com)

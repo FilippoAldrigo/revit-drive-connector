@@ -245,12 +245,17 @@ namespace RevitDriveConnector.Installer
                 try { File.Copy(extractedCreds, rootCreds, false); } catch { }
             }
 
-            // 3. Registra manifest .addin per Revit
-            string addinDllPath = Path.Combine(installBinDir, "RevitDriveConnector.Addin.dll");
+            // 3. Registra manifest .addin per Revit (seleziona build .NET 8 per 2025/2026 e .NET 10 per 2027+)
             var versionsToInstall = _detectedRevitVersions.Count > 0 ? _detectedRevitVersions : new List<string> { "2027", "2026", "2025" };
 
             foreach (var ver in versionsToInstall)
             {
+                bool useNet8 = ver == "2025" || ver == "2026";
+                string candidateSubfolder = Path.Combine(installBinDir, useNet8 ? "net8" : "net10", "RevitDriveConnector.Addin.dll");
+                string addinDllPath = File.Exists(candidateSubfolder)
+                    ? candidateSubfolder
+                    : Path.Combine(installBinDir, "RevitDriveConnector.Addin.dll");
+
                 string addinFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Autodesk", "Revit", "Addins", ver);
                 Directory.CreateDirectory(addinFolder);
                 string manifestFile = Path.Combine(addinFolder, "RevitDriveConnector.addin");
@@ -298,7 +303,8 @@ namespace RevitDriveConnector.Installer
                     localCachePath = cachePath,
                     autoStartServices = true,
                     syncTimeoutSeconds = 90,
-                    language = "Auto"
+                    language = "Auto",
+                    enableLiveElementLocks = true
                 };
 
                 File.WriteAllText(configFile, JsonSerializer.Serialize(configObj, new JsonSerializerOptions { WriteIndented = true }));
