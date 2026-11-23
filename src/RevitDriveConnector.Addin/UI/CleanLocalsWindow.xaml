@@ -1,0 +1,79 @@
+<Window x:Class="RevitDriveConnector.Addin.UI.CleanLocalsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Google Drive Connector - Pulizia Modelli Locali" Height="560" Width="890"
+        WindowStartupLocation="CenterScreen"
+        FontFamily="Segoe UI" FontSize="13"
+        Background="#F4F5F7">
+
+    <Grid Margin="18">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0" Margin="0,0,0,14">
+            <TextBlock x:Name="TxtHeaderTitle" Text="Pulizia Modelli Locali" FontSize="20" FontWeight="SemiBold" Foreground="#1E293B"/>
+            <TextBlock x:Name="TxtHeaderSubtitle" Text="Elimina solo i file nella cache locale di questo PC. Nessun file su Google Drive verra modificato o eliminato." Foreground="#64748B" Margin="0,4,0,0" TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <!-- Local Copies List -->
+        <Border Grid.Row="1" Background="White" CornerRadius="6" BorderBrush="#E2E8F0" BorderThickness="1">
+            <ListView x:Name="LvLocals" BorderThickness="0" Margin="4" SelectionMode="Single">
+                <ListView.View>
+                    <GridView>
+                        <GridViewColumn Width="42">
+                            <GridViewColumn.CellTemplate>
+                                <DataTemplate>
+                                    <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay}"
+                                              IsEnabled="{Binding CanSelect}"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                                </DataTemplate>
+                            </GridViewColumn.CellTemplate>
+                        </GridViewColumn>
+                        <GridViewColumn x:Name="ColProject" Header="Progetto" Width="210" DisplayMemberBinding="{Binding ProjectName}" />
+                        <GridViewColumn x:Name="ColFile" Header="File / Cartella Locale" Width="270" DisplayMemberBinding="{Binding DisplayName}" />
+                        <GridViewColumn x:Name="ColSize" Header="Dimensione" Width="95" DisplayMemberBinding="{Binding SizeDisplay}" />
+                        <GridViewColumn x:Name="ColModified" Header="Ultima Modifica" Width="125" DisplayMemberBinding="{Binding LastModified, StringFormat='{}{0:dd/MM/yyyy HH:mm}'}" />
+                        <GridViewColumn x:Name="ColStatus" Header="Stato" Width="105" DisplayMemberBinding="{Binding StatusDisplay}" />
+                    </GridView>
+                </ListView.View>
+            </ListView>
+        </Border>
+
+        <!-- Options & Status -->
+        <StackPanel Grid.Row="2" Margin="0,10,0,10">
+            <CheckBox x:Name="ChkAlsoCleanCentral"
+                      Content="Ripulisci anche la cache locale del Centrale (Central + manifest) dei progetti selezionati per forzare un download pulito da Google Drive"
+                      IsChecked="False"
+                      Foreground="#1E293B"
+                      FontWeight="SemiBold"
+                      Margin="0,0,0,8">
+                <CheckBox.ContentTemplate>
+                    <DataTemplate>
+                        <TextBlock Text="{Binding}" TextWrapping="Wrap"/>
+                    </DataTemplate>
+                </CheckBox.ContentTemplate>
+            </CheckBox>
+            <TextBlock x:Name="TxtStatus" Text="" Foreground="#0284C7" FontWeight="Medium" TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <!-- Action Buttons -->
+        <DockPanel Grid.Row="3">
+            <StackPanel Orientation="Horizontal">
+                <Button x:Name="BtnSelectAll" Content="Seleziona Tutti" Padding="12,0" Height="36" Background="#E2E8F0" Foreground="#334155" BorderThickness="0" FontWeight="SemiBold" Cursor="Hand" Click="BtnSelectAll_Click"/>
+                <Button x:Name="BtnDeselectAll" Content="Deseleziona" Padding="12,0" Height="36" Margin="8,0,0,0" Background="#F1F5F9" Foreground="#475569" BorderThickness="1" BorderBrush="#CBD5E1" FontWeight="SemiBold" Cursor="Hand" Click="BtnDeselectAll_Click"/>
+                <Button x:Name="BtnRefresh" Content="Aggiorna" Padding="12,0" Height="36" Margin="8,0,0,0" Background="#F1F5F9" Foreground="#0284C7" BorderThickness="1" BorderBrush="#BAE6FD" FontWeight="SemiBold" Cursor="Hand" Click="BtnRefresh_Click"/>
+            </StackPanel>
+
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button x:Name="BtnClose" Content="Chiudi" Width="100" Height="36" Margin="0,0,10,0" Background="#F1F5F9" Foreground="#475569" BorderThickness="1" BorderBrush="#CBD5E1" Cursor="Hand" Click="BtnClose_Click"/>
+                <Button x:Name="BtnDeleteSelected" Content="Elimina Selezionati" Width="175" Height="36" Background="#DC2626" Foreground="White" FontWeight="Bold" BorderThickness="0" Cursor="Hand" Click="BtnDeleteSelected_Click"/>
+            </StackPanel>
+        </DockPanel>
+    </Grid>
+</Window>

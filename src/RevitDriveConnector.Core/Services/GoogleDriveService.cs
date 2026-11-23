@@ -689,6 +689,15 @@ namespace RevitDriveConnector.Core.Services
             resp.EnsureSuccessStatusCode();
         }
 
+        private async Task DriveRemoveParentAsync(string fileId, string parentFolderId, CancellationToken ct = default)
+        {
+            string url = $"https://www.googleapis.com/drive/v3/files/{Uri.EscapeDataString(fileId)}?removeParents={Uri.EscapeDataString(parentFolderId)}&supportsAllDrives=true";
+            using var req = await CreateAuthorizedRequestAsync(HttpMethod.Patch, url, ct);
+            req.Content = new StringContent("{}", Encoding.UTF8, "application/json");
+            using var resp = await _http.SendAsync(req, ct);
+            resp.EnsureSuccessStatusCode();
+        }
+
         private bool IsLocalFallbackStorageOnly()
         {
             return string.IsNullOrWhiteSpace(_config.CloudStoragePath) ||
@@ -832,19 +841,63 @@ namespace RevitDriveConnector.Core.Services
                 (!string.IsNullOrEmpty(p.CloudFolderId) && string.Equals(p.CloudFolderId, folderId, StringComparison.OrdinalIgnoreCase)) ||
                 string.Equals(p.Name, projectName, StringComparison.OrdinalIgnoreCase));
 
+            bool incomingIsCanonical = !string.IsNullOrEmpty(cloudManifest?.CloudFolderId) &&
+                string.Equals(cloudManifest.CloudFolderId, folderId, StringComparison.OrdinalIgnoreCase);
+
             if (existing != null)
             {
-                existing.CloudFolderId = folderId;
-                if (cloudManifest != null && cloudManifest.Version >= existing.Version)
+                bool existingIsCanonical = !string.IsNullOrEmpty(existing.CloudFolderId) &&
+                    !string.IsNullOrEmpty(cloudManifest?.CloudFolderId) &&
+                    string.Equals(existing.CloudFolderId, cloudManifest.CloudFolderId, StringComparison.OrdinalIgnoreCase);
+
+                bool incomingWins = false;
+                if (string.IsNullOrEmpty(existing.CloudFolderId))
                 {
-                    existing.Version = cloudManifest.Version;
-                    existing.LastModifiedUtc = cloudManifest.LastSyncUtc;
-                    if (!string.IsNullOrEmpty(cloudManifest.LastSyncUser))
+                    incomingWins = true;
+                }
+                else if (cloudManifest != null)
+                {
+                    if (cloudManifest.Version > existing.Version)
                     {
-                        existing.LastModifiedBy = cloudManifest.LastSyncUser;
+                        incomingWins = true;
+                    }
+                    else if (cloudManifest.Version == existing.Version)
+                    {
+                        if (incomingIsCanonical && !existingIsCanonical)
+                        {
+                            incomingWins = true;
+                        }
+                        else if (!incomingIsCanonical && existingIsCanonical)
+                        {
+                            incomingWins = false;
+                        }
+                        else if (cloudManifest.LastSyncUtc > existing.LastModifiedUtc)
+                        {
+                            incomingWins = true;
+                        }
+                        else if (isSharedWithMe && !existing.IsSharedWithMe)
+                        {
+                            incomingWins = true;
+                        }
                     }
                 }
-                if (isSharedWithMe)
+
+                if (incomingWins)
+                {
+                    existing.CloudFolderId = folderId;
+                    _projectFolderIdCache[projectName] = folderId;
+                    if (cloudManifest != null)
+                    {
+                        existing.Version = cloudManifest.Version;
+                        existing.LastModifiedUtc = cloudManifest.LastSyncUtc;
+                        if (!string.IsNullOrEmpty(cloudManifest.LastSyncUser))
+                        {
+                            existing.LastModifiedBy = cloudManifest.LastSyncUser;
+                        }
+                    }
+                }
+
+                if (isSharedWithMe && (incomingWins || string.Equals(existing.CloudFolderId, folderId, StringComparison.OrdinalIgnoreCase)))
                 {
                     existing.IsSharedWithMe = true;
                     if (!string.IsNullOrEmpty(sharedBy)) existing.SharedBy = sharedBy;
@@ -853,6 +906,7 @@ namespace RevitDriveConnector.Core.Services
             }
             else
             {
+                _projectFolderIdCache[projectName] = folderId;
                 list.Add(new CloudProjectItem
                 {
                     Id = cloudManifest?.ProjectId ?? projectName,
@@ -930,7 +984,6 @@ namespace RevitDriveConnector.Core.Services
                                 var projectFolder = folderTask.Result;
                                 if (projectFolder == null) return;
 
-                                _projectFolderIdCache[projectFolder.Name] = projectFolder.Id;
                                 lock (listLock)
                                 {
                                     MergeOrAddCloudProject(list, projectFolder, manifestTask.Result);
@@ -976,7 +1029,6 @@ namespace RevitDriveConnector.Core.Services
                                     .FirstOrDefault();
 
                                 var cloudManifest = mf != null ? await TryDownloadManifestAsync(mf.Id, ct) : null;
-                                _projectFolderIdCache[folder.Name] = folder.Id;
                                 lock (listLock)
                                 {
                                     MergeOrAddCloudProject(list, folder, cloudManifest, forceSharedWithMe: true);
@@ -1036,7 +1088,6 @@ namespace RevitDriveConnector.Core.Services
                                         .FirstOrDefault();
 
                                     var cloudManifest = mf != null ? await TryDownloadManifestAsync(mf.Id, ct) : null;
-                                    _projectFolderIdCache[targetFolder.Name] = targetFolder.Id;
                                     lock (listLock)
                                     {
                                         MergeOrAddCloudProject(list, targetFolder, cloudManifest);
@@ -1112,7 +1163,7 @@ namespace RevitDriveConnector.Core.Services
                 }
                 catch { }
 
-                await DownloadCloudFolderRecursivelyAsync(cloudFolderId, localProjectDir, isInsideCentral: false, ct);
+                await DownloadProjectFromCloudFolderAsync(cloudFolderId, localProjectDir, ct);
             }
 
             string? mountedCentral = FindCentralRvtFile(localCentralDir, projectName);
@@ -1129,7 +1180,105 @@ namespace RevitDriveConnector.Core.Services
             throw new FileNotFoundException($"Impossibile preparare il modello centrale per '{projectName}'.");
         }
 
-        private async Task DownloadCloudFolderRecursivelyAsync(string folderId, string localDir, bool isInsideCentral, CancellationToken ct)
+        private async Task DownloadProjectFromCloudFolderAsync(string cloudFolderId, string localProjectDir, CancellationToken ct)
+        {
+            string? cloudJson = null;
+            ProjectManifest? cloudManifest = null;
+
+            var mFiles = await DriveListFilesAsync(
+                $"'{cloudFolderId}' in parents and name = 'manifest.json' and trashed = false",
+                "id,name,modifiedTime",
+                10,
+                ct);
+
+            var latestMf = mFiles
+                .OrderByDescending(x => x.ModifiedTime ?? DateTimeOffset.MinValue)
+                .FirstOrDefault();
+
+            if (latestMf != null)
+            {
+                using var mStream = new MemoryStream();
+                await DriveDownloadFileAsync(latestMf.Id, mStream, ct);
+                cloudJson = Encoding.UTF8.GetString(mStream.ToArray());
+                cloudManifest = JsonSerializer.Deserialize<ProjectManifest>(cloudJson);
+            }
+
+            if (cloudManifest != null &&
+                !string.IsNullOrEmpty(cloudManifest.CloudFolderId) &&
+                !string.Equals(cloudManifest.CloudFolderId, cloudFolderId, StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    var canonicalFiles = await DriveListFilesAsync(
+                        $"'{cloudManifest.CloudFolderId}' in parents and name = 'manifest.json' and trashed = false",
+                        "id,name,modifiedTime",
+                        10,
+                        ct);
+
+                    var latestCanonicalMf = canonicalFiles
+                        .OrderByDescending(x => x.ModifiedTime ?? DateTimeOffset.MinValue)
+                        .FirstOrDefault();
+
+                    if (latestCanonicalMf != null)
+                    {
+                        using var cStream = new MemoryStream();
+                        await DriveDownloadFileAsync(latestCanonicalMf.Id, cStream, ct);
+                        string canonicalJson = Encoding.UTF8.GetString(cStream.ToArray());
+                        var canonicalManifest = JsonSerializer.Deserialize<ProjectManifest>(canonicalJson);
+                        if (canonicalManifest != null && canonicalManifest.Version >= cloudManifest.Version)
+                        {
+                            cloudFolderId = cloudManifest.CloudFolderId;
+                            cloudManifest = canonicalManifest;
+                            cloudJson = canonicalJson;
+                            if (!string.IsNullOrWhiteSpace(cloudManifest.ProjectName))
+                            {
+                                _projectFolderIdCache[cloudManifest.ProjectName] = cloudFolderId;
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            var allowedCentralPaths = BuildAllowedCentralPaths(cloudManifest);
+            await DownloadCloudFolderRecursivelyAsync(
+                cloudFolderId,
+                localProjectDir,
+                isInsideCentral: false,
+                ct,
+                projectRootDir: localProjectDir,
+                allowedCentralRelativePaths: allowedCentralPaths);
+
+            if (!string.IsNullOrEmpty(cloudJson))
+            {
+                await File.WriteAllTextAsync(Path.Combine(localProjectDir, "manifest.json"), cloudJson, ct);
+            }
+        }
+
+        private static HashSet<string>? BuildAllowedCentralPaths(ProjectManifest? manifest)
+        {
+            if (manifest?.Files == null || manifest.Files.Count == 0)
+            {
+                return null;
+            }
+
+            var set = new HashSet<string>(
+                manifest.Files
+                    .Where(f => !string.IsNullOrWhiteSpace(f.RelativePath))
+                    .Select(f => f.RelativePath.Replace('\\', '/'))
+                    .Where(p => p.StartsWith("Central/", StringComparison.OrdinalIgnoreCase)),
+                StringComparer.OrdinalIgnoreCase);
+
+            return set.Count > 0 ? set : null;
+        }
+
+        private async Task DownloadCloudFolderRecursivelyAsync(
+            string folderId,
+            string localDir,
+            bool isInsideCentral,
+            CancellationToken ct,
+            string? projectRootDir = null,
+            HashSet<string>? allowedCentralRelativePaths = null)
         {
             ct.ThrowIfCancellationRequested();
             Directory.CreateDirectory(localDir);
@@ -1146,17 +1295,28 @@ namespace RevitDriveConnector.Core.Services
                 .Select(g => g.OrderByDescending(x => x.ModifiedTime ?? DateTimeOffset.MinValue).First())
                 .ToList();
 
-            var cloudNames = new HashSet<string>(deduplicatedItems.Select(x => x.Name), StringComparer.OrdinalIgnoreCase);
-
             foreach (var folder in deduplicatedItems.Where(f => f.MimeType == "application/vnd.google-apps.folder"))
             {
                 ct.ThrowIfCancellationRequested();
                 string localPath = Path.Combine(localDir, folder.Name);
                 bool childInCentral = isInsideCentral || string.Equals(folder.Name, "Central", StringComparison.OrdinalIgnoreCase);
-                await DownloadCloudFolderRecursivelyAsync(folder.Id, localPath, childInCentral, ct);
+                await DownloadCloudFolderRecursivelyAsync(folder.Id, localPath, childInCentral, ct, projectRootDir, allowedCentralRelativePaths);
             }
 
             var fileItems = deduplicatedItems.Where(f => f.MimeType != "application/vnd.google-apps.folder").ToList();
+            if (isInsideCentral && allowedCentralRelativePaths != null && !string.IsNullOrEmpty(projectRootDir))
+            {
+                fileItems = fileItems.Where(f =>
+                {
+                    string rel = Path.GetRelativePath(projectRootDir, Path.Combine(localDir, f.Name)).Replace('\\', '/');
+                    return allowedCentralRelativePaths.Contains(rel);
+                }).ToList();
+            }
+
+            var cloudNames = new HashSet<string>(
+                deduplicatedItems.Where(f => f.MimeType == "application/vnd.google-apps.folder").Select(x => x.Name)
+                    .Concat(fileItems.Select(x => x.Name)),
+                StringComparer.OrdinalIgnoreCase);
             if (fileItems.Count > 0)
             {
                 using var sem = new SemaphoreSlim(6);
@@ -1335,7 +1495,14 @@ namespace RevitDriveConnector.Core.Services
                         {
                             if (dup.MimeType != "application/vnd.google-apps.folder")
                             {
-                                try { await DriveDeleteFileAsync(dup.Id, ct); } catch { }
+                                try
+                                {
+                                    await DriveDeleteFileAsync(dup.Id, ct);
+                                }
+                                catch
+                                {
+                                    try { await DriveRemoveParentAsync(dup.Id, parentFolderId, ct); } catch { }
+                                }
                             }
                         }
                     }
@@ -1377,7 +1544,10 @@ namespace RevitDriveConnector.Core.Services
                         {
                             await DriveDeleteFileAsync(kvp.Value.id, ct);
                         }
-                        catch { }
+                        catch
+                        {
+                            try { await DriveRemoveParentAsync(kvp.Value.id, parentFolderId, ct); } catch { }
+                        }
                     }
                 }
             }
@@ -1414,7 +1584,7 @@ namespace RevitDriveConnector.Core.Services
                 if (!string.IsNullOrEmpty(cloudFolderId))
                 {
                     Console.WriteLine($"[GoogleDriveService] Download e allineamento da Google Drive ({cloudFolderId})...");
-                    await DownloadCloudFolderRecursivelyAsync(cloudFolderId, localProjectDir, isInsideCentral: false, ct);
+                    await DownloadProjectFromCloudFolderAsync(cloudFolderId, localProjectDir, ct);
                     apiDownloadCompleted = true;
                 }
             }
@@ -1690,8 +1860,8 @@ namespace RevitDriveConnector.Core.Services
                 Console.WriteLine($"[GoogleDriveService] Upload API completato con successo!");
             }
 
-            // 2. Allinea anche la cartella CloudStoragePath se è un disco Google Drive Desktop reale (non fallback locale)
-            if (!HasAuth || !IsLocalFallbackStorageOnly())
+            // 2. Allinea la cartella CloudStoragePath solo quando l'API Google Drive non è autenticata (modalità locale/LAN/Drive Desktop)
+            if (!HasAuth)
             {
                 try
                 {
@@ -1741,7 +1911,7 @@ namespace RevitDriveConnector.Core.Services
                 }
             }
 
-            if (!HasAuth || !IsLocalFallbackStorageOnly())
+            if (!HasAuth)
             {
                 try
                 {
@@ -1870,7 +2040,14 @@ namespace RevitDriveConnector.Core.Services
                             };
                         }
 
-                        await DownloadCloudFolderRecursivelyAsync(cloudFolderId, localProjectDir, isInsideCentral: false, ct);
+                        var allowedCentralPaths = BuildAllowedCentralPaths(cloudManifest);
+                        await DownloadCloudFolderRecursivelyAsync(
+                            cloudFolderId,
+                            localProjectDir,
+                            isInsideCentral: false,
+                            ct,
+                            projectRootDir: localProjectDir,
+                            allowedCentralRelativePaths: allowedCentralPaths);
                         await File.WriteAllTextAsync(localManifestFile, cloudJson, ct);
 
                         string localHashAfter = await ComputeCentralStateHashAsync(localCentralDir, projectName, ct);

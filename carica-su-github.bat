@@ -2,17 +2,17 @@
 title Caricamento Revit Drive Connector su GitHub
 cd /d "%~dp0"
 echo ========================================================
-echo  CARICAMENTO NUOVA VERSIONE v1.2.0 SU GITHUB
+echo  CARICAMENTO NUOVA VERSIONE v1.3.2 SU GITHUB
 echo ========================================================
 echo.
 git log -1 --oneline
 echo.
-echo Invio commit e aggiornamento sito GitHub Pages su origin/main...
-git push origin main
+echo Invio commit, tag e aggiornamento sito GitHub Pages su origin/main...
+git push origin main --tags
 echo.
 if %ERRORLEVEL% equ 0 (
     echo ========================================================
-    echo  SUCCESSO! La versione v1.2.0 e il sito web sono aggiornati.
+    echo  SUCCESSO! La versione v1.3.2 e il sito web sono aggiornati.
     echo ========================================================
 ) else (
     echo.

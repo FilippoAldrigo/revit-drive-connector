@@ -391,6 +391,61 @@ namespace RevitDriveConnector.Core.Localization
  ["LiveLock_FailureStatic"] = new() {
  ["it"] = "Elemento bloccato in modifica live da un collega su Google Drive. Annulla questa operazione e attendi che il collega sincronizzi il modello.",
  ["en"] = "Element is locked for live editing by a teammate on Google Drive. Cancel this operation and wait for your teammate to synchronize."
+ },
+
+ // Clean Local Copies
+ ["Btn_CleanLocals"] = new() { ["it"] = "Pulizia\nLocali", ["en"] = "Clean\nLocals" },
+ ["Btn_CleanLocals_Tip"] = new() {
+ ["it"] = "Visualizza ed elimina le copie locali obsolete presenti nella cache di questo PC (senza toccare i file su Google Drive).",
+ ["en"] = "Inspect and delete outdated local model copies in this PC's cache (without touching files on Google Drive)."
+ },
+ ["Clean_Title"] = new() { ["it"] = "Google Drive Connector - Pulizia Modelli Locali", ["en"] = "Google Drive Connector - Clean Local Models" },
+ ["Clean_Header"] = new() { ["it"] = "Pulizia Modelli Locali", ["en"] = "Clean Local Models" },
+ ["Clean_Subtitle"] = new() {
+ ["it"] = "Elimina solo i file nella cache locale di questo PC. Nessun file su Google Drive verra modificato o eliminato.",
+ ["en"] = "Deletes only files in this PC's local cache. No files on Google Drive will be modified or deleted."
+ },
+ ["Clean_ColProject"] = new() { ["it"] = "Progetto", ["en"] = "Project" },
+ ["Clean_ColFile"] = new() { ["it"] = "File / Cartella Locale", ["en"] = "Local File / Folder" },
+ ["Clean_ColSize"] = new() { ["it"] = "Dimensione", ["en"] = "Size" },
+ ["Clean_ColModified"] = new() { ["it"] = "Ultima Modifica", ["en"] = "Last Modified" },
+ ["Clean_ColStatus"] = new() { ["it"] = "Stato", ["en"] = "Status" },
+ ["Clean_StatusReady"] = new() { ["it"] = "Eliminabile", ["en"] = "Ready to clean" },
+ ["Clean_StatusOpenInRevit"] = new() { ["it"] = "Aperto in Revit", ["en"] = "Open in Revit" },
+ ["Clean_StatusCloudOnly"] = new() { ["it"] = "Solo Cloud", ["en"] = "Cloud Only" },
+ ["Clean_CentralCacheOnly"] = new() { ["it"] = "Cache Centrale (Central / manifest)", ["en"] = "Central Cache (Central / manifest)" },
+ ["Clean_CloudOnlyFile"] = new() { ["it"] = "— (nessun file locale su questo PC)", ["en"] = "— (no local files on this PC)" },
+ ["Clean_FoundSummaryWithCloud"] = new() {
+ ["it"] = "Trovati {0} elementi locali in {1} ({2} totali) • {3} progetti solo su Google Drive.",
+ ["en"] = "Found {0} local items in {1} ({2} total) • {3} projects on Google Drive only."
+ },
+ ["Clean_SelectAll"] = new() { ["it"] = "Seleziona Tutti", ["en"] = "Select All" },
+ ["Clean_DeselectAll"] = new() { ["it"] = "Deseleziona", ["en"] = "Deselect" },
+ ["Clean_Refresh"] = new() { ["it"] = "Aggiorna", ["en"] = "Refresh" },
+ ["Clean_ChkAlsoCleanCentral"] = new() {
+ ["it"] = "Ripulisci anche la cache locale del Centrale (Central + manifest) dei progetti selezionati per forzare un download pulito da Google Drive",
+ ["en"] = "Also clear the local Central cache (Central + manifest) for selected projects to force a clean re-download from Google Drive"
+ },
+ ["Clean_BtnDeleteSelected"] = new() { ["it"] = "Elimina Selezionati", ["en"] = "Delete Selected" },
+ ["Clean_NoLocalsFound"] = new() { ["it"] = "Nessuna copia locale trovata nella cache ({0}).", ["en"] = "No local copies found in cache ({0})." },
+ ["Clean_FoundSummary"] = new() { ["it"] = "Trovati {0} elementi locali in {1} ({2} totali).", ["en"] = "Found {0} local items in {1} ({2} total)." },
+ ["Clean_NothingSelected"] = new() { ["it"] = "Seleziona almeno un modello locale da eliminare.", ["en"] = "Please select at least one local model to delete." },
+ ["Clean_ConfirmTitle"] = new() { ["it"] = "Conferma Pulizia Locali", ["en"] = "Confirm Local Cleanup" },
+ ["Clean_ConfirmBody"] = new() {
+ ["it"] = "Vuoi eliminare definitivamente {0} copie locali ({1}) da questo PC?\n\nAssicurati di aver gia sincronizzato le modifiche importanti. I file su Google Drive NON verranno toccati.",
+ ["en"] = "Do you want to permanently delete {0} local copies ({1}) from this PC?\n\nMake sure any important changes have already been synced. Files on Google Drive will NOT be touched."
+ },
+ ["Clean_ConfirmWithCentralNote"] = new() {
+ ["it"] = "\n\nVerra ripulita anche la cache locale del Centrale per {0} progetti selezionati (verra riscaricata pulita al prossimo 'Apri da Google Drive').",
+ ["en"] = "\n\nThe local Central cache will also be cleared for {0} selected projects (it will be re-downloaded cleanly on next 'Open from Google Drive')."
+ },
+ ["Clean_DoneSummary"] = new() {
+ ["it"] = "Pulizia completata: eliminati {0} elementi ({1} liberati).",
+ ["en"] = "Cleanup complete: deleted {0} items ({1} freed)."
+ },
+ ["Clean_DoneWithErrors"] = new() {
+ ["it"] = "Pulizia completata con {0} avvisi: eliminati {1} elementi ({2} liberati). Alcuni file potrebbero essere in uso:\n{3}",
+ ["en"] = "Cleanup finished with {0} warnings: deleted {1} items ({2} freed). Some files may be in use:\n{3}"
  }
  };
  }

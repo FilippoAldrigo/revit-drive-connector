@@ -72,7 +72,7 @@ namespace RevitDriveConnector.Addin.Commands
                     ? string.Join(", ", statusInfo.ActiveUsers.Select(u => $"{u.UserName} ({u.MachineName})"))
                     : uiapp.Application.Username;
 
-                string verStr = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.3.1";
+                string verStr = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.3.2";
                 string liveLockStr = LiveElementLockService.IsLiveLockEnabled ? "ENABLED" : "DISABLED";
 
                 var td = new TaskDialog(Loc.Tr("Status_Title"))

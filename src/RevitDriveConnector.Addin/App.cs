@@ -449,6 +449,19 @@ namespace RevitDriveConnector.Addin
                 AvailabilityClassName = typeof(ZeroDocAvailability).FullName
             };
             configPanel.AddItem(btnSettingsData);
+
+            var btnCleanLocalsData = new PushButtonData(
+                "btnCleanLocals",
+                Loc.Tr("Btn_CleanLocals"),
+                assemblyPath,
+                typeof(CleanLocalsCommand).FullName)
+            {
+                ToolTip = Loc.Tr("Btn_CleanLocals_Tip"),
+                LargeImage = IconHelper.GetBitmap("icon_cleanup_32.png"),
+                Image = IconHelper.GetBitmap("icon_cleanup_16.png"),
+                AvailabilityClassName = typeof(ZeroDocAvailability).FullName
+            };
+            configPanel.AddItem(btnCleanLocalsData);
         }
     }
 }

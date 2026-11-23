@@ -6,7 +6,7 @@
 [![Language](https://img.shields.io/badge/Language-English%20%7C%20Italiano-informational.svg)]()
 [![License: Proprietary Free-to-Use](https://img.shields.io/badge/License-Proprietary%20%7C%20Free%20to%20Use-success.svg)](LICENSE)
 [![Google Drive](https://img.shields.io/badge/Cloud-Google%20Drive%20v3-4285F4.svg)](https://www.google.com/drive/)
-[![Version](https://img.shields.io/badge/Release-v1.3.1-brightgreen.svg)](https://github.com/FilippoAldrigo/revit-drive-connector/releases)
+[![Version](https://img.shields.io/badge/Release-v1.3.2-brightgreen.svg)](https://github.com/FilippoAldrigo/revit-drive-connector/releases)
 
 **Google Drive Connector** is a **Cloud Worksharing and Multi-User Collaboration solution for Autodesk Revit (versions 2025, 2026, and 2027)** powered by Google Drive.
 
