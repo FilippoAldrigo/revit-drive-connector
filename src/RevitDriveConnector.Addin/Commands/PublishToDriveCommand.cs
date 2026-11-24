@@ -160,14 +160,19 @@ namespace RevitDriveConnector.Addin.Commands
                     User = username
                 };
 
-                var respTask = System.Threading.Tasks.Task.Run(() => IpcClient.SendRequestAsync(new IpcRequest
+                var createIpcReq = new IpcRequest
                 {
                     Command = IpcCommand.CreateCloudProject,
                     PayloadJson = JsonSerializer.Serialize(createReq)
-                }, timeoutMs: 300000));
+                };
 
-                respTask.Wait();
-                var resp = respTask.Result;
+                var progressDlg = new SyncProgressDialog(
+                    $"Pubblicazione '{projectName}' su Google Drive",
+                    "Caricamento iniziale del modello centrale (chunked resumable)...",
+                    createIpcReq,
+                    timeoutMs: 1800000);
+                progressDlg.ShowDialog();
+                var resp = progressDlg.Response ?? new IpcResponse { Success = false, ErrorMessage = "Upload annullato o non completato." };
 
                 if (!resp.Success)
                 {

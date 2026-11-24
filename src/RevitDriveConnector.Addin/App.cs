@@ -57,12 +57,11 @@ namespace RevitDriveConnector.Addin
                 application.ControlledApplication.DocumentClosing += SynchronizationCoordinator.OnDocumentClosing;
                 application.SelectionChanged += OnSelectionChanged;
 
-                // Registra Idling per notifiche push "Live Toast" delle richieste di prestito
+                // Registra Idling per operazioni post-apertura e push rapido live lock
                 application.Idling += OnIdling;
 
-                // Auto-avvio dei servizi di sfondo se non già in esecuzione
-                NamedPipeIpcClient.EnsureDaemonRunningHandler = EnsureDaemonRunningAsync;
-                _ = Task.Run(EnsureDaemonRunningAsync);
+                // Inizializzazione asincrona motore serverless Google Drive OAuth2
+                _ = Task.Run(() => Core.Services.LocalServiceEngine.EnsureInitializedAsync());
 
                 return Result.Succeeded;
             }
@@ -219,77 +218,6 @@ namespace RevitDriveConnector.Addin
             catch
             {
                 return Result.Failed;
-            }
-        }
-
-        public static string? FindDaemonExe()
-        {
-            string assemblyDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? "";
-            var candidates = new List<string>();
-
-            if (!string.IsNullOrEmpty(assemblyDir))
-            {
-                candidates.Add(Path.Combine(assemblyDir, "RevitDriveConnector.Daemon.exe"));
-                string? parentDir = Directory.GetParent(assemblyDir)?.FullName;
-                if (!string.IsNullOrEmpty(parentDir))
-                {
-                    candidates.Add(Path.Combine(parentDir, "RevitDriveConnector.Daemon.exe"));
-                }
-            }
-
-            string appDataBin = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RevitDriveConnector", "bin", "RevitDriveConnector.Daemon.exe");
-            candidates.Add(appDataBin);
-
-            string? dir = assemblyDir;
-            for (int i = 0; i < 6 && !string.IsNullOrEmpty(dir); i++)
-            {
-                candidates.Add(Path.Combine(dir, "dist", "payload", "bin", "RevitDriveConnector.Daemon.exe"));
-                candidates.Add(Path.Combine(dir, "src", "RevitDriveConnector.Daemon", "bin", "Release", "net8.0", "RevitDriveConnector.Daemon.exe"));
-                candidates.Add(Path.Combine(dir, "src", "RevitDriveConnector.Daemon", "bin", "Debug", "net8.0", "RevitDriveConnector.Daemon.exe"));
-                candidates.Add(Path.Combine(dir, "src", "RevitDriveConnector.Daemon", "bin", "Release", "net10.0", "RevitDriveConnector.Daemon.exe"));
-                candidates.Add(Path.Combine(dir, "src", "RevitDriveConnector.Daemon", "bin", "Debug", "net10.0", "RevitDriveConnector.Daemon.exe"));
-                candidates.Add(Path.Combine(dir, "RevitDriveConnector.Daemon", "bin", "Release", "net8.0", "RevitDriveConnector.Daemon.exe"));
-                candidates.Add(Path.Combine(dir, "RevitDriveConnector.Daemon", "bin", "Debug", "net8.0", "RevitDriveConnector.Daemon.exe"));
-                dir = Path.GetDirectoryName(dir);
-            }
-
-            return candidates.FirstOrDefault(File.Exists);
-        }
-
-        public static async Task EnsureDaemonRunningAsync()
-        {
-            if (await IpcClient.PingServerAsync(800))
-            {
-                return;
-            }
-
-            try
-            {
-                string? daemonExe = FindDaemonExe();
-                if (!string.IsNullOrEmpty(daemonExe) && File.Exists(daemonExe))
-                {
-                    var psi = new ProcessStartInfo
-                    {
-                        FileName = daemonExe,
-                        WorkingDirectory = Path.GetDirectoryName(daemonExe) ?? "",
-                        UseShellExecute = false,
-                        CreateNoWindow = true
-                    };
-                    Process.Start(psi);
-
-                    for (int i = 0; i < 16; i++)
-                    {
-                        await Task.Delay(500);
-                        if (await IpcClient.PingServerAsync(500))
-                        {
-                            return;
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[App] Errore avvio Daemon: {ex.Message}");
             }
         }
 

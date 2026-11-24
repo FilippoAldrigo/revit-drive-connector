@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Events;
@@ -11,12 +12,14 @@ using Autodesk.Revit.UI.Events;
 using RevitDriveConnector.Core.IPC;
 using RevitDriveConnector.Core.Localization;
 using RevitDriveConnector.Core.Models;
+using RevitDriveConnector.Core.Services;
+using RevitDriveConnector.Core.Utils;
 
 namespace RevitDriveConnector.Addin.Services
 {
     /// <summary>
-    /// Dynamic Model Updater (IUpdater) that prevents a user from modifying or deleting
-    /// elements currently live-locked (edited but not yet synced) by another teammate.
+    /// Dynamic Model Updater (IUpdater) that blocks modifying or deleting elements currently
+    /// live-locked (edited but not yet synced) by another teammate.
     /// </summary>
     public class LiveElementLockUpdater : IUpdater
     {
@@ -44,9 +47,11 @@ namespace RevitDriveConnector.Addin.Services
             string centralPath = SynchronizationCoordinator.GetCentralModelPath(doc);
             if (!SynchronizationCoordinator.IsDriveManagedPath(centralPath)) return;
 
+            string projectId = SynchronizationCoordinator.ExtractProjectName(centralPath);
+            if (!LiveElementLockService.HasAnyRemoteLocks(projectId)) return;
+
             var modifiedIds = data.GetModifiedElementIds();
             var deletedIds = data.GetDeletedElementIds();
-
             if (modifiedIds.Count == 0 && deletedIds.Count == 0) return;
 
             foreach (var elemId in modifiedIds)
@@ -54,33 +59,33 @@ namespace RevitDriveConnector.Addin.Services
                 var elem = doc.GetElement(elemId);
                 if (elem == null || !LiveElementLockService.ShouldTrackElement(elem)) continue;
 
-                // Se l'utente aveva selezionato esplicitamente altri elementi e questo è solo un giunto adiacente,
-                // evita falsi positivi di blocco su muri/elementi lineari non selezionati
-                if (LiveElementLockService.IsLikelyJoinCascadeInCurrentSelection(doc, elem, modifiedIds))
+                // Strict join-cascade filter: only skip if another element is actively selected (<2s ago)
+                // AND multiple elements changed in the same transaction AND this element is NOT selected.
+                if (modifiedIds.Count > 1 && LiveElementLockService.IsStrictJoinCascade(projectId, elem, modifiedIds))
                 {
                     continue;
                 }
 
-                if (LiveElementLockService.TryGetRemoteLock(doc, elem.UniqueId, out var lockInfo) && lockInfo != null)
+                if (LiveElementLockService.TryGetRemoteLock(projectId, elem.UniqueId, out var lockInfo) && lockInfo != null)
                 {
                     var fm = new FailureMessage(_failureId);
                     fm.SetFailingElement(elemId);
                     doc.PostFailure(fm);
-                    LiveElementLockService.NotifyConflictToast(lockInfo);
+                    LiveElementLockService.NotifyConflictToast(lockInfo, isWarningOnly: false);
                     return;
                 }
             }
 
             foreach (var delId in deletedIds)
             {
-                if (LiveElementLockService.TryGetCachedUniqueId(doc, delId, out string? uid) &&
+                if (LiveElementLockService.TryGetCachedUniqueId(projectId, delId, out string? uid) &&
                     !string.IsNullOrEmpty(uid) &&
-                    LiveElementLockService.TryGetRemoteLock(doc, uid, out var lockInfo) && lockInfo != null)
+                    LiveElementLockService.TryGetRemoteLock(projectId, uid, out var lockInfo) && lockInfo != null)
                 {
                     var fm = new FailureMessage(_failureId);
                     fm.SetFailingElement(delId);
                     doc.PostFailure(fm);
-                    LiveElementLockService.NotifyConflictToast(lockInfo);
+                    LiveElementLockService.NotifyConflictToast(lockInfo, isWarningOnly: false);
                     return;
                 }
             }
@@ -94,7 +99,26 @@ namespace RevitDriveConnector.Addin.Services
 
     public static class LiveElementLockService
     {
+        private sealed class ProjectLiveState
+        {
+            public readonly object SyncRoot = new();
+            public string ProjectId { get; init; } = string.Empty;
+            public string Username { get; set; } = string.Empty;
+            public HashSet<string> LocalDirty { get; } = new(StringComparer.OrdinalIgnoreCase);
+            public HashSet<string> SessionAdded { get; } = new(StringComparer.OrdinalIgnoreCase);
+            public ConcurrentDictionary<string, RemoteElementLockInfo> RemoteLocks { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+            public ConcurrentDictionary<long, string> ElementIdMap { get; } = new();
+            public HashSet<long> RecentSelection { get; set; } = new();
+            public DateTime LastSelectionUtc { get; set; } = DateTime.MinValue;
+            public DateTime LastLocalPushUtc { get; set; } = DateTime.MinValue;
+            public DateTime LastEditActivityUtc { get; set; } = DateTime.MinValue;
+            public DateTime LastRemotePollUtc { get; set; } = DateTime.MinValue;
+            public bool HasPendingLocalPush { get; set; }
+            public int IoBusyFlag; // 0 = idle, 1 = busy (Interlocked)
+        }
+
         private static readonly NamedPipeIpcClient IpcClient = new();
+        private static readonly ConcurrentDictionary<string, ProjectLiveState> StatesByProject = new(StringComparer.OrdinalIgnoreCase);
 
         private static readonly HashSet<BuiltInCategory> ExcludedCategories = new()
         {
@@ -135,24 +159,11 @@ namespace RevitDriveConnector.Addin.Services
             BuiltInCategory.OST_DuctCurves
         };
 
-        private static readonly ConcurrentDictionary<string, HashSet<string>> LocalDirtyByProject = new(StringComparer.OrdinalIgnoreCase);
-        private static readonly ConcurrentDictionary<string, HashSet<string>> SessionAddedByProject = new(StringComparer.OrdinalIgnoreCase);
-        private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, RemoteElementLockInfo>> RemoteLocksByProject = new(StringComparer.OrdinalIgnoreCase);
-        private static readonly ConcurrentDictionary<string, ConcurrentDictionary<long, string>> ElementIdMapByProject = new(StringComparer.OrdinalIgnoreCase);
-        private static readonly ConcurrentDictionary<string, HashSet<long>> RecentSelectionByProject = new(StringComparer.OrdinalIgnoreCase);
-        private static readonly object LocalSetLock = new();
-
         private static LiveElementLockUpdater? _updater;
+        private static System.Threading.Timer? _backgroundPoller;
         private static volatile bool _isSyncOrReloadActive = false;
         private static volatile bool _isLiveLockEnabled = true;
-
-        private static DateTime _lastSelectionUtc = DateTime.MinValue;
-        private static DateTime _lastRemotePollUtc = DateTime.MinValue;
-        private static DateTime _lastLocalPushUtc = DateTime.MinValue;
-        private static DateTime _lastEditActivityUtc = DateTime.MinValue;
         private static DateTime _lastToastShownUtc = DateTime.MinValue;
-        private static bool _hasPendingLocalPush = false;
-        private static bool _isIoBusy = false;
 
         public static bool IsLiveLockEnabled => _isLiveLockEnabled;
 
@@ -197,10 +208,14 @@ namespace RevitDriveConnector.Addin.Services
                     UpdaterRegistry.AddTrigger(_updater.GetUpdaterId(), instanceFilter, Element.GetChangeTypeAny());
                     UpdaterRegistry.AddTrigger(_updater.GetUpdaterId(), instanceFilter, Element.GetChangeTypeElementDeletion());
                 }
+
+                // Start background unified poller (runs every 4s independent of Revit OnIdling!)
+                _backgroundPoller?.Dispose();
+                _backgroundPoller = new System.Threading.Timer(BackgroundPollCallback, null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(4));
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[LiveElementLockService] Initialize updater warning: {ex.Message}");
+                AppLogger.Warn("LiveElementLockService", "Initialize updater warning", ex);
             }
         }
 
@@ -208,6 +223,9 @@ namespace RevitDriveConnector.Addin.Services
         {
             try
             {
+                _backgroundPoller?.Dispose();
+                _backgroundPoller = null;
+
                 if (_updater != null && UpdaterRegistry.IsUpdaterRegistered(_updater.GetUpdaterId()))
                 {
                     UpdaterRegistry.UnregisterUpdater(_updater.GetUpdaterId());
@@ -229,6 +247,21 @@ namespace RevitDriveConnector.Addin.Services
             }
         }
 
+        private static ProjectLiveState GetOrCreateState(string projectId, string? username = null)
+        {
+            var state = StatesByProject.GetOrAdd(projectId, pid => new ProjectLiveState { ProjectId = pid });
+            if (!string.IsNullOrWhiteSpace(username))
+            {
+                state.Username = username;
+            }
+            return state;
+        }
+
+        public static bool HasAnyRemoteLocks(string projectId)
+        {
+            return StatesByProject.TryGetValue(projectId, out var state) && !state.RemoteLocks.IsEmpty;
+        }
+
         public static void OnSelectionChanged(SelectionChangedEventArgs e)
         {
             if (!_isLiveLockEnabled || _isSyncOrReloadActive) return;
@@ -242,35 +275,71 @@ namespace RevitDriveConnector.Addin.Services
                 if (!SynchronizationCoordinator.IsDriveManagedPath(centralPath)) return;
 
                 string projectId = SynchronizationCoordinator.ExtractProjectName(centralPath);
+                var state = GetOrCreateState(projectId, doc.Application.Username);
                 var selected = e.GetSelectedElements();
 
                 var set = new HashSet<long>();
+                RemoteElementLockInfo? selectedLockedInfo = null;
+
                 if (selected != null)
                 {
                     foreach (var id in selected)
                     {
                         set.Add(id.Value);
+                        var elem = doc.GetElement(id);
+                        if (elem != null && !string.IsNullOrEmpty(elem.UniqueId))
+                        {
+                            // Lazily populate ElementId -> UniqueId cache so deletions are always tracked
+                            state.ElementIdMap[id.Value] = elem.UniqueId;
+
+                            if (selectedLockedInfo == null &&
+                                ShouldTrackElement(elem) &&
+                                state.RemoteLocks.TryGetValue(elem.UniqueId, out var lockInfo))
+                            {
+                                selectedLockedInfo = lockInfo;
+                            }
+                        }
                     }
                 }
 
-                RecentSelectionByProject[projectId] = set;
-                _lastSelectionUtc = DateTime.UtcNow;
+                lock (state.SyncRoot)
+                {
+                    state.RecentSelection = set;
+                    state.LastSelectionUtc = DateTime.UtcNow;
+                }
+
+                // Proactive warning toast the moment a user selects a teammate's live-locked element!
+                if (selectedLockedInfo != null)
+                {
+                    NotifyConflictToast(selectedLockedInfo, isWarningOnly: true);
+                }
             }
             catch { }
         }
 
-        public static bool IsLikelyJoinCascadeInCurrentSelection(Document doc, Element elem, ICollection<ElementId> modifiedIds)
+        /// <summary>
+        /// Strict join-cascade detection: only true when selection happened within 2.5 seconds,
+        /// the element itself is NOT selected, AND at least one selected element is also in modifiedIds.
+        /// Prevents false negatives when users modify walls/elements directly via Trim/Move/Properties.
+        /// </summary>
+        public static bool IsStrictJoinCascade(string projectId, Element elem, ICollection<ElementId> modifiedIds)
         {
             if (elem?.Category == null) return false;
             if (!Enum.IsDefined(typeof(BuiltInCategory), elem.Category.Id.Value)) return false;
             var bic = (BuiltInCategory)elem.Category.Id.Value;
             if (!JoinCascadingCategories.Contains(bic)) return false;
 
-            if ((DateTime.UtcNow - _lastSelectionUtc).TotalSeconds > 15.0) return false;
+            if (!StatesByProject.TryGetValue(projectId, out var state)) return false;
 
-            string centralPath = SynchronizationCoordinator.GetCentralModelPath(doc);
-            string projectId = SynchronizationCoordinator.ExtractProjectName(centralPath);
-            if (!RecentSelectionByProject.TryGetValue(projectId, out var selectedSet) || selectedSet.Count == 0)
+            HashSet<long> selectedSet;
+            DateTime lastSelUtc;
+            lock (state.SyncRoot)
+            {
+                selectedSet = state.RecentSelection;
+                lastSelUtc = state.LastSelectionUtc;
+            }
+
+            if (selectedSet.Count == 0 || (DateTime.UtcNow - lastSelUtc).TotalSeconds > 2.5)
             {
                 return false;
             }
@@ -280,34 +349,48 @@ namespace RevitDriveConnector.Addin.Services
                 return false;
             }
 
-            bool hasSelectionOverlap = modifiedIds.Any(id => selectedSet.Contains(id.Value));
-            return hasSelectionOverlap;
+            return modifiedIds.Any(id => selectedSet.Contains(id.Value));
         }
 
         public static void OnDocumentOpened(Document doc)
         {
-            if (!_isLiveLockEnabled || doc == null || !doc.IsWorkshared || doc.IsFamilyDocument) return;
+            if (doc == null || !doc.IsWorkshared || doc.IsFamilyDocument) return;
 
             string centralPath = SynchronizationCoordinator.GetCentralModelPath(doc);
             if (!SynchronizationCoordinator.IsDriveManagedPath(centralPath)) return;
 
             string projectId = SynchronizationCoordinator.ExtractProjectName(centralPath);
-            SeedElementLookupCache(doc, projectId);
-            _lastRemotePollUtc = DateTime.MinValue;
+            var state = GetOrCreateState(projectId, doc.Application.Username);
+            state.LastRemotePollUtc = DateTime.MinValue;
+
+            // Lightweight seeding of active view elements only (avoids multi-second full-model scan on 1 GB projects!)
+            if (_isLiveLockEnabled)
+            {
+                SeedActiveViewLookupCache(doc, state);
+                TriggerStateSyncAsync(state, forcePoll: true);
+            }
         }
 
         public static void SeedElementLookupCache(Document doc, string projectId)
         {
-            if (!_isLiveLockEnabled) return;
+            if (!_isLiveLockEnabled || doc == null) return;
+            var state = GetOrCreateState(projectId, doc.Application.Username);
+            SeedActiveViewLookupCache(doc, state);
+        }
+
+        private static void SeedActiveViewLookupCache(Document doc, ProjectLiveState state)
+        {
             try
             {
-                var map = ElementIdMapByProject.GetOrAdd(projectId, _ => new ConcurrentDictionary<long, string>());
-                var collector = new FilteredElementCollector(doc).WhereElementIsNotElementType();
+                var activeView = doc.ActiveView;
+                if (activeView == null) return;
+
+                var collector = new FilteredElementCollector(doc, activeView.Id).WhereElementIsNotElementType();
                 foreach (var elem in collector)
                 {
-                    if (ShouldTrackElement(elem) && elem.Id != null && !string.IsNullOrEmpty(elem.UniqueId))
+                    if (elem.Id != null && !string.IsNullOrEmpty(elem.UniqueId) && ShouldTrackElement(elem))
                     {
-                        map[elem.Id.Value] = elem.UniqueId;
+                        state.ElementIdMap[elem.Id.Value] = elem.UniqueId;
                     }
                 }
             }
@@ -339,22 +422,20 @@ namespace RevitDriveConnector.Addin.Services
             }
 
             string projectId = SynchronizationCoordinator.ExtractProjectName(centralPath);
-            var idMap = ElementIdMapByProject.GetOrAdd(projectId, _ => new ConcurrentDictionary<long, string>());
-            var dirtySet = LocalDirtyByProject.GetOrAdd(projectId, _ => new HashSet<string>(StringComparer.OrdinalIgnoreCase));
-            var addedSet = SessionAddedByProject.GetOrAdd(projectId, _ => new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+            var state = GetOrCreateState(projectId, doc.Application.Username);
             bool changed = false;
 
             var modifiedIds = e.GetModifiedElementIds();
             var addedIds = e.GetAddedElementIds();
             var deletedIds = e.GetDeletedElementIds();
 
-            lock (LocalSetLock)
+            lock (state.SyncRoot)
             {
                 foreach (var id in addedIds)
                 {
                     var elem = doc.GetElement(id);
                     if (elem == null) continue;
-                    idMap[id.Value] = elem.UniqueId;
+                    state.ElementIdMap[id.Value] = elem.UniqueId;
 
                     if (!ShouldTrackElement(elem)) continue;
 
@@ -362,14 +443,14 @@ namespace RevitDriveConnector.Addin.Services
                     {
                         if (WorksharingUtils.GetCheckoutStatus(doc, id) != CheckoutStatus.OwnedByCurrentUser)
                         {
-                            if (dirtySet.Remove(elem.UniqueId)) changed = true;
-                            addedSet.Remove(elem.UniqueId);
+                            if (state.LocalDirty.Remove(elem.UniqueId)) changed = true;
+                            state.SessionAdded.Remove(elem.UniqueId);
                         }
                     }
                     else
                     {
-                        addedSet.Add(elem.UniqueId);
-                        if (dirtySet.Add(elem.UniqueId)) changed = true;
+                        state.SessionAdded.Add(elem.UniqueId);
+                        if (state.LocalDirty.Add(elem.UniqueId)) changed = true;
                     }
                 }
 
@@ -377,7 +458,7 @@ namespace RevitDriveConnector.Addin.Services
                 {
                     var elem = doc.GetElement(id);
                     if (elem == null) continue;
-                    idMap[id.Value] = elem.UniqueId;
+                    state.ElementIdMap[id.Value] = elem.UniqueId;
 
                     if (!ShouldTrackElement(elem)) continue;
 
@@ -386,48 +467,47 @@ namespace RevitDriveConnector.Addin.Services
                     {
                         if (checkoutStatus != CheckoutStatus.OwnedByCurrentUser)
                         {
-                            if (dirtySet.Remove(elem.UniqueId)) changed = true;
+                            if (state.LocalDirty.Remove(elem.UniqueId)) changed = true;
                         }
                     }
                     else
                     {
-                        if (IsLikelyJoinCascadeInCurrentSelection(doc, elem, modifiedIds))
+                        if (modifiedIds.Count > 1 && IsStrictJoinCascade(projectId, elem, modifiedIds))
                         {
                             continue;
                         }
 
                         if (checkoutStatus == CheckoutStatus.OwnedByCurrentUser)
                         {
-                            if (dirtySet.Add(elem.UniqueId)) changed = true;
+                            if (state.LocalDirty.Add(elem.UniqueId)) changed = true;
                         }
                     }
                 }
 
                 foreach (var id in deletedIds)
                 {
-                    if (idMap.TryGetValue(id.Value, out string? uid) && !string.IsNullOrEmpty(uid))
+                    if (state.ElementIdMap.TryGetValue(id.Value, out string? uid) && !string.IsNullOrEmpty(uid))
                     {
                         if (e.Operation == UndoOperation.TransactionUndone)
                         {
-                            if (dirtySet.Remove(uid)) changed = true;
+                            if (state.LocalDirty.Remove(uid)) changed = true;
                         }
-                        else if (addedSet.Remove(uid))
+                        else if (state.SessionAdded.Remove(uid))
                         {
-                            // Creato ed eliminato prima del Sync: non esiste sul centrale, quindi non va bloccato
-                            if (dirtySet.Remove(uid)) changed = true;
+                            if (state.LocalDirty.Remove(uid)) changed = true;
                         }
                         else
                         {
-                            if (dirtySet.Add(uid)) changed = true;
+                            if (state.LocalDirty.Add(uid)) changed = true;
                         }
                     }
                 }
-            }
 
-            if (changed)
-            {
-                _hasPendingLocalPush = true;
-                _lastEditActivityUtc = DateTime.UtcNow;
+                if (changed)
+                {
+                    state.HasPendingLocalPush = true;
+                    state.LastEditActivityUtc = DateTime.UtcNow;
+                }
             }
         }
 
@@ -439,37 +519,30 @@ namespace RevitDriveConnector.Addin.Services
 
             string projectId = SynchronizationCoordinator.ExtractProjectName(centralPath);
             string username = doc.Application.Username;
+            var state = GetOrCreateState(projectId, username);
 
-            List<string> remainingOwned = new();
-            lock (LocalSetLock)
+            List<string> remainingOwned;
+            lock (state.SyncRoot)
             {
-                SessionAddedByProject.TryRemove(projectId, out _);
-
-                if (LocalDirtyByProject.TryGetValue(projectId, out var dirtySet))
+                state.SessionAdded.Clear();
+                var toRemove = new List<string>();
+                foreach (var uid in state.LocalDirty)
                 {
-                    var toRemove = new List<string>();
-                    foreach (var uid in dirtySet)
+                    var elem = doc.GetElement(uid);
+                    if (elem == null || WorksharingUtils.GetCheckoutStatus(doc, elem.Id) != CheckoutStatus.OwnedByCurrentUser)
                     {
-                        var elem = doc.GetElement(uid);
-                        if (elem == null || WorksharingUtils.GetCheckoutStatus(doc, elem.Id) != CheckoutStatus.OwnedByCurrentUser)
-                        {
-                            toRemove.Add(uid);
-                        }
+                        toRemove.Add(uid);
                     }
-
-                    foreach (var uid in toRemove)
-                    {
-                        dirtySet.Remove(uid);
-                    }
-
-                    remainingOwned = dirtySet.ToList();
                 }
+
+                foreach (var uid in toRemove) state.LocalDirty.Remove(uid);
+                remainingOwned = state.LocalDirty.ToList();
+                state.HasPendingLocalPush = false;
+                state.LastLocalPushUtc = DateTime.UtcNow;
+                state.LastRemotePollUtc = DateTime.MinValue;
             }
 
-            SeedElementLookupCache(doc, projectId);
-            _hasPendingLocalPush = false;
-            _lastLocalPushUtc = DateTime.UtcNow;
-            _lastRemotePollUtc = DateTime.MinValue;
+            SeedActiveViewLookupCache(doc, state);
 
             _ = Task.Run(async () =>
             {
@@ -481,6 +554,7 @@ namespace RevitDriveConnector.Addin.Services
                         PayloadJson = JsonSerializer.Serialize(new UserLiveEditsState
                         {
                             ProjectId = projectId,
+                            ClientId = GoogleDriveService.BuildClientId(username, Environment.MachineName),
                             User = username,
                             Machine = Environment.MachineName,
                             ElementUniqueIds = remainingOwned
@@ -500,15 +574,7 @@ namespace RevitDriveConnector.Addin.Services
             string projectId = SynchronizationCoordinator.ExtractProjectName(centralPath);
             string username = doc.Application.Username;
 
-            lock (LocalSetLock)
-            {
-                LocalDirtyByProject.TryRemove(projectId, out _);
-                SessionAddedByProject.TryRemove(projectId, out _);
-            }
-            RemoteLocksByProject.TryRemove(projectId, out _);
-            ElementIdMapByProject.TryRemove(projectId, out _);
-            RecentSelectionByProject.TryRemove(projectId, out _);
-            _hasPendingLocalPush = false;
+            StatesByProject.TryRemove(projectId, out _);
 
             _ = Task.Run(async () =>
             {
@@ -520,6 +586,7 @@ namespace RevitDriveConnector.Addin.Services
                         PayloadJson = JsonSerializer.Serialize(new UserLiveEditsState
                         {
                             ProjectId = projectId,
+                            ClientId = GoogleDriveService.BuildClientId(username, Environment.MachineName),
                             User = username,
                             Machine = Environment.MachineName,
                             ElementUniqueIds = new List<string>()
@@ -530,9 +597,24 @@ namespace RevitDriveConnector.Addin.Services
             });
         }
 
+        /// <summary>
+        /// Runs every 4s on a background thread (even when Revit is busy and not firing OnIdling!)
+        /// pushing dirty local locks quickly (0.6s debounce / 2.5s cooldown) and executing a single
+        /// unified PollConnectorState API call per open project.
+        /// </summary>
+        private static void BackgroundPollCallback(object? _)
+        {
+            if (_isSyncOrReloadActive) return;
+
+            foreach (var state in StatesByProject.Values)
+            {
+                TriggerStateSyncAsync(state, forcePoll: false);
+            }
+        }
+
         public static void OnIdlingTick(UIApplication uiapp)
         {
-            if (!_isLiveLockEnabled || _isSyncOrReloadActive || _isIoBusy) return;
+            if (_isSyncOrReloadActive) return;
 
             var doc = uiapp.ActiveUIDocument?.Document;
             if (doc == null || !doc.IsWorkshared || doc.IsFamilyDocument) return;
@@ -541,44 +623,55 @@ namespace RevitDriveConnector.Addin.Services
             if (!SynchronizationCoordinator.IsDriveManagedPath(centralPath)) return;
 
             string projectId = SynchronizationCoordinator.ExtractProjectName(centralPath);
-            string username = doc.Application.Username;
-            if (string.IsNullOrWhiteSpace(projectId) || string.IsNullOrWhiteSpace(username)) return;
+            var state = GetOrCreateState(projectId, doc.Application.Username);
+
+            // Fast push from OnIdling if edits were just made
+            if (state.HasPendingLocalPush)
+            {
+                TriggerStateSyncAsync(state, forcePoll: false);
+            }
+        }
+
+        private static void TriggerStateSyncAsync(ProjectLiveState state, bool forcePoll)
+        {
+            if (string.IsNullOrWhiteSpace(state.ProjectId) || string.IsNullOrWhiteSpace(state.Username)) return;
 
             var now = DateTime.UtcNow;
-
             bool shouldPushLocal = false;
             List<string>? snapshotToPush = null;
+            bool shouldPollRemote = false;
 
-            lock (LocalSetLock)
+            lock (state.SyncRoot)
             {
-                if (LocalDirtyByProject.TryGetValue(projectId, out var dirtySet))
+                if (_isLiveLockEnabled)
                 {
-                    bool debouncedReady = _hasPendingLocalPush &&
-                                          (now - _lastEditActivityUtc).TotalSeconds >= 1.5 &&
-                                          (now - _lastLocalPushUtc).TotalSeconds >= 6.0;
+                    bool debouncedReady = state.HasPendingLocalPush &&
+                                          (now - state.LastEditActivityUtc).TotalSeconds >= 0.6 &&
+                                          (now - state.LastLocalPushUtc).TotalSeconds >= 2.5;
 
-                    bool heartbeatDue = dirtySet.Count > 0 &&
-                                        (now - _lastLocalPushUtc).TotalMinutes >= 5.0;
+                    bool heartbeatDue = state.LocalDirty.Count > 0 &&
+                                        (now - state.LastLocalPushUtc).TotalMinutes >= 4.0;
 
                     if (debouncedReady || heartbeatDue)
                     {
                         shouldPushLocal = true;
-                        snapshotToPush = dirtySet.ToList();
-                        _hasPendingLocalPush = false;
-                        _lastLocalPushUtc = now;
+                        snapshotToPush = state.LocalDirty.ToList();
+                        state.HasPendingLocalPush = false;
+                        state.LastLocalPushUtc = now;
                     }
+                }
+
+                // Unified connector poll every 6s (1 API call covers BOTH live locks AND borrow requests!)
+                if (forcePoll || (now - state.LastRemotePollUtc).TotalSeconds >= 6.0)
+                {
+                    shouldPollRemote = true;
+                    state.LastRemotePollUtc = now;
                 }
             }
 
-            bool shouldPollRemote = (now - _lastRemotePollUtc).TotalSeconds >= 10.0;
             if (!shouldPushLocal && !shouldPollRemote) return;
+            if (Interlocked.CompareExchange(ref state.IoBusyFlag, 1, 0) != 0) return;
 
-            if (shouldPollRemote)
-            {
-                _lastRemotePollUtc = now;
-            }
-
-            _isIoBusy = true;
             _ = Task.Run(async () =>
             {
                 try
@@ -590,48 +683,56 @@ namespace RevitDriveConnector.Addin.Services
                             Command = IpcCommand.PublishLiveEdits,
                             PayloadJson = JsonSerializer.Serialize(new UserLiveEditsState
                             {
-                                ProjectId = projectId,
-                                User = username,
+                                ProjectId = state.ProjectId,
+                                ClientId = GoogleDriveService.BuildClientId(state.Username, Environment.MachineName),
+                                User = state.Username,
                                 Machine = Environment.MachineName,
                                 ElementUniqueIds = snapshotToPush
                             })
-                        }, timeoutMs: 10000);
+                        }, timeoutMs: 12000);
                     }
 
                     if (shouldPollRemote)
                     {
                         var resp = await IpcClient.SendRequestAsync(new IpcRequest
                         {
-                            Command = IpcCommand.GetRemoteLiveEdits,
+                            Command = IpcCommand.PollConnectorState,
                             PayloadJson = JsonSerializer.Serialize(new
                             {
-                                ProjectId = projectId,
-                                User = username
+                                ProjectId = state.ProjectId,
+                                User = state.Username,
+                                Machine = Environment.MachineName
                             })
-                        }, timeoutMs: 10000);
+                        }, timeoutMs: 12000);
 
                         if (resp.Success && !string.IsNullOrEmpty(resp.DataJson))
                         {
-                            var locks = JsonSerializer.Deserialize<List<RemoteElementLockInfo>>(resp.DataJson);
-                            var newDict = new ConcurrentDictionary<string, RemoteElementLockInfo>(StringComparer.OrdinalIgnoreCase);
-                            if (locks != null)
+                            var poll = JsonSerializer.Deserialize<ConnectorPollSnapshot>(resp.DataJson);
+                            if (poll != null)
                             {
-                                foreach (var l in locks)
+                                var newDict = new ConcurrentDictionary<string, RemoteElementLockInfo>(StringComparer.OrdinalIgnoreCase);
+                                foreach (var l in poll.RemoteLiveLocks)
                                 {
                                     newDict[l.ElementUniqueId] = l;
                                 }
+                                state.RemoteLocks = newDict;
+
+                                // Forward borrow notifications from the SAME single API call!
+                                BorrowNotificationService.ProcessPolledRequests(
+                                    state.Username,
+                                    poll.PendingBorrowRequests,
+                                    poll.OutgoingBorrowRequests);
                             }
-                            RemoteLocksByProject[projectId] = newDict;
                         }
                     }
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[LiveElementLockService] Background sync warning: {ex.Message}");
+                    AppLogger.Debug("LiveElementLockService", $"Background sync warning su '{state.ProjectId}': {ex.Message}");
                 }
                 finally
                 {
-                    _isIoBusy = false;
+                    Interlocked.Exchange(ref state.IoBusyFlag, 0);
                 }
             });
         }
@@ -650,14 +751,12 @@ namespace RevitDriveConnector.Addin.Services
             return true;
         }
 
-        public static bool TryGetCachedUniqueId(Document doc, ElementId id, out string? uniqueId)
+        public static bool TryGetCachedUniqueId(string projectId, ElementId id, out string? uniqueId)
         {
             uniqueId = null;
-            string centralPath = SynchronizationCoordinator.GetCentralModelPath(doc);
-            string projectId = SynchronizationCoordinator.ExtractProjectName(centralPath);
-            if (ElementIdMapByProject.TryGetValue(projectId, out var map))
+            if (StatesByProject.TryGetValue(projectId, out var state))
             {
-                return map.TryGetValue(id.Value, out uniqueId);
+                return state.ElementIdMap.TryGetValue(id.Value, out uniqueId);
             }
             return false;
         }
@@ -665,19 +764,25 @@ namespace RevitDriveConnector.Addin.Services
         public static bool TryGetRemoteLock(Document doc, string elementUniqueId, out RemoteElementLockInfo? lockInfo)
         {
             lockInfo = null;
-            if (!_isLiveLockEnabled || string.IsNullOrEmpty(elementUniqueId)) return false;
-
+            if (doc == null || !_isLiveLockEnabled || string.IsNullOrEmpty(elementUniqueId)) return false;
             string centralPath = SynchronizationCoordinator.GetCentralModelPath(doc);
             string projectId = SynchronizationCoordinator.ExtractProjectName(centralPath);
+            return TryGetRemoteLock(projectId, elementUniqueId, out lockInfo);
+        }
 
-            if (RemoteLocksByProject.TryGetValue(projectId, out var dict))
+        public static bool TryGetRemoteLock(string projectId, string elementUniqueId, out RemoteElementLockInfo? lockInfo)
+        {
+            lockInfo = null;
+            if (!_isLiveLockEnabled || string.IsNullOrEmpty(elementUniqueId)) return false;
+
+            if (StatesByProject.TryGetValue(projectId, out var state))
             {
-                return dict.TryGetValue(elementUniqueId, out lockInfo);
+                return state.RemoteLocks.TryGetValue(elementUniqueId, out lockInfo);
             }
             return false;
         }
 
-        public static void NotifyConflictToast(RemoteElementLockInfo lockInfo)
+        public static void NotifyConflictToast(RemoteElementLockInfo lockInfo, bool isWarningOnly = false)
         {
             var now = DateTime.UtcNow;
             if ((now - _lastToastShownUtc).TotalSeconds < 2.0) return;
@@ -692,8 +797,8 @@ namespace RevitDriveConnector.Addin.Services
                         var dlg = new System.Windows.Window
                         {
                             Title = Loc.Tr("LiveLock_Title"),
-                            Width = 420,
-                            Height = 145,
+                            Width = 430,
+                            Height = 148,
                             WindowStyle = System.Windows.WindowStyle.ToolWindow,
                             ResizeMode = System.Windows.ResizeMode.NoResize,
                             Topmost = true,
@@ -709,10 +814,12 @@ namespace RevitDriveConnector.Addin.Services
                         var panel = new System.Windows.Controls.StackPanel { Margin = new System.Windows.Thickness(14) };
                         panel.Children.Add(new System.Windows.Controls.TextBlock
                         {
-                            Text = $"🔒 {Loc.Tr("LiveLock_Title")}",
+                            Text = isWarningOnly
+                                ? $"⚠️ {Loc.Tr("LiveLock_Title")} (In modifica)"
+                                : $"🔒 {Loc.Tr("LiveLock_Title")}",
                             FontWeight = System.Windows.FontWeights.Bold,
                             FontSize = 13.5,
-                            Foreground = System.Windows.Media.Brushes.DarkRed,
+                            Foreground = isWarningOnly ? System.Windows.Media.Brushes.DarkOrange : System.Windows.Media.Brushes.DarkRed,
                             Margin = new System.Windows.Thickness(0, 0, 0, 6)
                         });
                         panel.Children.Add(new System.Windows.Controls.TextBlock
@@ -725,7 +832,7 @@ namespace RevitDriveConnector.Addin.Services
                         dlg.Content = panel;
                         dlg.Show();
 
-                        var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(5.5) };
+                        var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(isWarningOnly ? 4.0 : 5.5) };
                         timer.Tick += (s, e) =>
                         {
                             timer.Stop();

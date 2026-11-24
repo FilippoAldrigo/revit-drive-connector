@@ -6,7 +6,7 @@
 [![Language](https://img.shields.io/badge/Language-English%20%7C%20Italiano-informational.svg)]()
 [![License: Proprietary Free-to-Use](https://img.shields.io/badge/License-Proprietary%20%7C%20Free%20to%20Use-success.svg)](LICENSE)
 [![Google Drive](https://img.shields.io/badge/Cloud-Google%20Drive%20v3-4285F4.svg)](https://www.google.com/drive/)
-[![Version](https://img.shields.io/badge/Release-v1.3.2-brightgreen.svg)](https://github.com/FilippoAldrigo/revit-drive-connector/releases)
+[![Version](https://img.shields.io/badge/Release-v1.4.0-brightgreen.svg)](https://github.com/FilippoAldrigo/revit-drive-connector/releases)
 
 **Google Drive Connector** is a **Cloud Worksharing and Multi-User Collaboration solution for Autodesk Revit (versions 2025, 2026, and 2027)** powered by Google Drive.
 
@@ -91,7 +91,7 @@ Standard cloud storage services (Google Drive Desktop, Dropbox, OneDrive) cannot
 1. Download and run **`RevitDriveConnector_Setup.exe`**.
 2. The installer will automatically:
    - Detect installed Autodesk Revit versions (2025, 2026, 2027).
-   - Install the background Daemon and Server coordination services.
+   - Deploy the 100% serverless Add-in and Core engine into `%APPDATA%\RevitDriveConnector\`.
    - Deploy `.addin` manifest files into `%APPDATA%\Autodesk\Revit\Addins\<Year>\`.
 
 ### 2. Google OAuth 2.0 Configuration
@@ -108,13 +108,12 @@ To enable the Google Drive v3 synchronization:
 
 ## Technical Architecture
 
-The solution is engineered in **.NET 10 / .NET 8 (C#)** with a high-performance modular structure:
+The solution is engineered in **.NET 10 / .NET 8 (C#)** with a high-performance modular, 100% serverless structure:
 
-* **`RevitDriveConnector.Addin`**: Native Revit add-in library interacting with Autodesk Revit DB/UI APIs and AdWindows.
-* **`RevitDriveConnector.Core`**: Common core providing IPC Named Pipes, localization engine (`Loc.cs`), SHA-256 hash validation, NTP time synchronization, and lock models.
-* **`RevitDriveConnector.Daemon`**: Background Windows service managing Google Drive API v3 communication, cloud delta synchronization, and lock state.
-* **`RevitDriveConnector.Server`**: Optional lightweight coordinator server for ultra-low-latency LAN worksharing environments.
+* **`RevitDriveConnector.Addin`**: Native Revit add-in library interacting with Autodesk Revit DB/UI APIs and AdWindows, with live UI progress dialogs and background collaboration polling.
+* **`RevitDriveConnector.Core`**: Serverless core engine handling direct Google Drive API v3 OAuth2 communication, 8 MB chunked resumable upload/download with 308 resume, SHA-256 single-pass hash caching, NTFS snapshot protection, and distributed atomic cloud locking.
 * **`RevitDriveConnector.Installer`**: Standalone WPF installation executable adhering to modern Windows and Autodesk Human Interface Guidelines.
+* **`RevitDriveConnector.Tests`**: Automated unit and integration test suite verifying Google Drive API v3 protocol handling, resumable byte offsets, hash caching, and cloud locking.
 
 ---
 

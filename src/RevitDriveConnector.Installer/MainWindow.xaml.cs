@@ -14,7 +14,6 @@ namespace RevitDriveConnector.Installer
     public partial class MainWindow : Window
     {
         private readonly List<string> _detectedRevitVersions = new();
-        private string _detectedDrivePath = "";
         private readonly bool _isItalian;
 
         public MainWindow()
@@ -93,49 +92,11 @@ namespace RevitDriveConnector.Installer
                 TxtRevitStatus.Foreground = System.Windows.Media.Brushes.Orange;
             }
 
-            // 2. Rileva Google Drive
-            var drivePaths = new List<string>
-            {
-                @"G:\My Drive",
-                @"G:\Il mio Drive",
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Google Drive"),
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Il mio Drive"),
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "My Drive")
-            };
-
-            try
-            {
-                foreach (var d in DriveInfo.GetDrives())
-                {
-                    if (!d.IsReady) continue;
-                    string root = d.RootDirectory.FullName;
-                    string itP = Path.Combine(root, "Il mio Drive");
-                    string enP = Path.Combine(root, "My Drive");
-                    if (!drivePaths.Contains(itP)) drivePaths.Add(itP);
-                    if (!drivePaths.Contains(enP)) drivePaths.Add(enP);
-                }
-            }
-            catch { }
-
-            foreach (var dp in drivePaths)
-            {
-                if (Directory.Exists(dp))
-                {
-                    _detectedDrivePath = dp;
-                    break;
-                }
-            }
-
-            if (!string.IsNullOrEmpty(_detectedDrivePath))
-            {
-                TxtDriveStatus.Text = _isItalian ? $"Connesso ({_detectedDrivePath})" : $"Connected ({_detectedDrivePath})";
-                TxtDriveStatus.Foreground = System.Windows.Media.Brushes.Green;
-            }
-            else
-            {
-                TxtDriveStatus.Text = _isItalian ? "Modalità Cloud API / Cartella Locale" : "Cloud API / Local Folder Mode";
-                TxtDriveStatus.Foreground = System.Windows.Media.Brushes.DodgerBlue;
-            }
+            // 2. Modalità Serverless Google Drive OAuth2 API
+            TxtDriveStatus.Text = _isItalian
+                ? "Google Drive OAuth2 API (Personale & Workspace Shared Drives)"
+                : "Google Drive OAuth2 API (Personal & Workspace Shared Drives)";
+            TxtDriveStatus.Foreground = System.Windows.Media.Brushes.ForestGreen;
         }
 
         private async void BtnInstall_Click(object sender, RoutedEventArgs e)
@@ -276,19 +237,7 @@ namespace RevitDriveConnector.Installer
                 File.WriteAllText(manifestFile, xml);
             }
 
-            // 4. Configurazione Drive
-            string cloudProjectsPath;
-            if (!string.IsNullOrEmpty(_detectedDrivePath))
-            {
-                cloudProjectsPath = Path.Combine(_detectedDrivePath, "RevitProjects");
-            }
-            else
-            {
-                cloudProjectsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "RevitDrive_CloudStorage");
-            }
-
-            Directory.CreateDirectory(cloudProjectsPath);
-
+            // 4. Configurazione Cache Locale
             string cachePath = @"C:\RevitDriveCache";
             Directory.CreateDirectory(cachePath);
 
@@ -298,13 +247,11 @@ namespace RevitDriveConnector.Installer
             {
                 var configObj = new
                 {
-                    coordinatorUrl = "http://localhost:5000",
-                    cloudStoragePath = cloudProjectsPath,
                     localCachePath = cachePath,
-                    autoStartServices = true,
-                    syncTimeoutSeconds = 90,
+                    syncTimeoutSeconds = 120,
                     language = "Auto",
-                    enableLiveElementLocks = true
+                    enableLiveElementLocks = true,
+                    uploadChunkSizeMb = 8
                 };
 
                 File.WriteAllText(configFile, JsonSerializer.Serialize(configObj, new JsonSerializerOptions { WriteIndented = true }));

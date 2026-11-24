@@ -54,7 +54,7 @@ namespace RevitDriveConnector.Addin.Commands
                 if (!resp.Success || string.IsNullOrEmpty(resp.DataJson))
                 {
                     TaskDialog.Show(Loc.Tr("Status_Title"),
-                        $"{Loc.Tr("Common_Error")}: {resp.ErrorMessage}\n\nRevitDriveConnector.Daemon is not responding.");
+                        $"{Loc.Tr("Common_Error")}: {resp.ErrorMessage}");
                     return Result.Failed;
                 }
 
@@ -62,7 +62,7 @@ namespace RevitDriveConnector.Addin.Commands
 
                 string driveAccountStr = statusInfo.GoogleDriveConnected
                     ? $"CONNECTED ({statusInfo.GoogleAccountEmail})"
-                    : $"Shared Drive Folder ({statusInfo.CloudStoragePath})";
+                    : "NOT CONNECTED (Open 'Google Account' to sign in)";
 
                 string lockStatusStr = !string.IsNullOrEmpty(statusInfo.CurrentLockHolder)
                     ? $"LOCKED by {statusInfo.CurrentLockHolder} ({statusInfo.CurrentLockMachine}) until {statusInfo.LockExpiresAtUtc?.ToLocalTime():HH:mm:ss}"

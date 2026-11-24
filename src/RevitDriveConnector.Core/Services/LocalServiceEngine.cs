@@ -1,8 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
-using System.Net.Http;
-using System.Net.Http.Json;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,35 +9,19 @@ using RevitDriveConnector.Core.Utils;
 
 namespace RevitDriveConnector.Core.Services
 {
+    /// <summary>
+    /// 100% Serverless in-process command dispatcher executing directly against Google Drive API v3.
+    /// </summary>
     public static class LocalServiceEngine
     {
-        private static readonly HttpClient HttpClient = new() { Timeout = TimeSpan.FromSeconds(3) };
         public static readonly GoogleDriveService DriveService = new();
         private static bool _initialized = false;
-        private static readonly SemaphoreSlim _initLock = new(1, 1);
-        private static DateTime _coordinatorUnavailableUntilUtc = DateTime.MinValue;
-        private static string _lastCoordinatorUrl = string.Empty;
-
-        private static bool IsCoordinatorTemporarilySkipped(string url)
-        {
-            if (string.IsNullOrWhiteSpace(url)) return true;
-            if (!string.Equals(_lastCoordinatorUrl, url, StringComparison.OrdinalIgnoreCase))
-            {
-                _lastCoordinatorUrl = url;
-                _coordinatorUnavailableUntilUtc = DateTime.MinValue;
-            }
-            return DateTime.UtcNow < _coordinatorUnavailableUntilUtc;
-        }
-
-        private static void MarkCoordinatorUnavailable()
-        {
-            _coordinatorUnavailableUntilUtc = DateTime.UtcNow.AddSeconds(60);
-        }
+        private static readonly SemaphoreSlim InitLock = new(1, 1);
 
         public static async Task EnsureInitializedAsync(CancellationToken ct = default)
         {
             if (_initialized) return;
-            await _initLock.WaitAsync(ct);
+            await InitLock.WaitAsync(ct);
             try
             {
                 if (_initialized) return;
@@ -50,11 +31,14 @@ namespace RevitDriveConnector.Core.Services
             }
             finally
             {
-                _initLock.Release();
+                InitLock.Release();
             }
         }
 
-        public static async Task<IpcResponse> HandleIpcRequestAsync(IpcRequest request, CancellationToken ct = default)
+        public static async Task<IpcResponse> HandleIpcRequestAsync(
+            IpcRequest request,
+            CancellationToken ct = default,
+            Action<TransferProgressInfo>? progressCallback = null)
         {
             await EnsureInitializedAsync(ct);
 
@@ -73,7 +57,6 @@ namespace RevitDriveConnector.Core.Services
                         };
 
                     case IpcCommand.GetDaemonStatus:
-                        DriveService.ReloadConfig();
                         string? statusProjId = null;
                         if (!string.IsNullOrWhiteSpace(request.PayloadJson))
                         {
@@ -92,16 +75,16 @@ namespace RevitDriveConnector.Core.Services
                         var activeUsers = new List<UserSession>();
                         if (!string.IsNullOrWhiteSpace(statusProjId))
                         {
-                            string pDir = await DriveService.ResolveAndSyncConnectorDirAsync(statusProjId, pullFromCloud: true, ct);
-                            activeLock = FileBasedLockManager.GetActiveLock(pDir);
-                            activeUsers = await DriveService.GetActiveUsersAsync(statusProjId, ct);
+                            var lockTask = DriveService.GetActiveLockAsync(statusProjId, ct);
+                            var usersTask = DriveService.GetActiveUsersAsync(statusProjId, ct);
+                            await Task.WhenAll(lockTask, usersTask);
+                            activeLock = lockTask.Result;
+                            activeUsers = usersTask.Result;
                         }
 
                         var status = new DaemonStatusInfo
                         {
-                            Status = "Online",
-                            CoordinatorUrl = config.CoordinatorUrl,
-                            CloudStoragePath = DriveService.CloudStoragePath,
+                            Status = "Online (Serverless API)",
                             LocalCachePath = DriveService.LocalCachePath,
                             GoogleDriveConnected = DriveService.IsNativeGoogleDriveConnected,
                             GoogleAccountEmail = DriveService.ConnectedEmail,
@@ -188,8 +171,7 @@ namespace RevitDriveConnector.Core.Services
                         };
 
                     case IpcCommand.SaveGoogleCredentials:
-                        string credJson = request.PayloadJson;
-                        bool saved = await DriveService.SaveCredentialsAsync(credJson, ct);
+                        bool saved = await DriveService.SaveCredentialsAsync(request.PayloadJson, ct);
                         return new IpcResponse
                         {
                             RequestId = request.RequestId,
@@ -202,15 +184,12 @@ namespace RevitDriveConnector.Core.Services
                         var mountReq = JsonSerializer.Deserialize<Dictionary<string, string>>(request.PayloadJson);
                         string mProjectName = mountReq?["ProjectName"] ?? "";
                         string mFolderId = mountReq?["CloudFolderId"] ?? "";
-                        string mCentralPath = await DriveService.MountCloudProjectAsync(mProjectName, mFolderId, ct);
+                        string mCentralPath = await DriveService.MountCloudProjectAsync(mProjectName, mFolderId, ct, progressCallback);
                         return new IpcResponse
                         {
                             RequestId = request.RequestId,
                             Success = true,
-                            DataJson = JsonSerializer.Serialize(new Dictionary<string, string>
-                            {
-                                ["CentralPath"] = mCentralPath
-                            })
+                            DataJson = JsonSerializer.Serialize(new Dictionary<string, string> { ["CentralPath"] = mCentralPath })
                         };
 
                     case IpcCommand.AddCollaborator:
@@ -223,7 +202,6 @@ namespace RevitDriveConnector.Core.Services
                                 addCollabReq.Role,
                                 addCollabReq.SendNotificationEmail,
                                 ct);
-
                             return new IpcResponse
                             {
                                 RequestId = request.RequestId,
@@ -264,15 +242,12 @@ namespace RevitDriveConnector.Core.Services
                         var prepReq = JsonSerializer.Deserialize<Dictionary<string, string>>(request.PayloadJson);
                         string projectName = prepReq != null && prepReq.TryGetValue("ProjectName", out var pnVal) ? pnVal : "";
                         string? prefFolderId = prepReq != null && prepReq.TryGetValue("CloudFolderId", out var cfVal) && !string.IsNullOrWhiteSpace(cfVal) ? cfVal : null;
-                        string centralPath = await DriveService.DownloadAndPrepareProjectAsync(projectName, prefFolderId, ct);
+                        string centralPath = await DriveService.DownloadAndPrepareProjectAsync(projectName, prefFolderId, ct, progressCallback);
                         return new IpcResponse
                         {
                             RequestId = request.RequestId,
                             Success = true,
-                            DataJson = JsonSerializer.Serialize(new Dictionary<string, string>
-                            {
-                                ["CentralPath"] = centralPath
-                            })
+                            DataJson = JsonSerializer.Serialize(new Dictionary<string, string> { ["CentralPath"] = centralPath })
                         };
 
                     case IpcCommand.AcquireSyncLock:
@@ -283,55 +258,11 @@ namespace RevitDriveConnector.Core.Services
                         }
 
                         var driveLockResp = await DriveService.AcquireProjectLockAsync(lockReq, ct);
-                        if (driveLockResp.Status == SyncLockStatus.Error)
-                        {
-                            return new IpcResponse
-                            {
-                                RequestId = request.RequestId,
-                                Success = false,
-                                ErrorMessage = driveLockResp.Message,
-                                DataJson = JsonSerializer.Serialize(driveLockResp)
-                            };
-                        }
-
-                        if (driveLockResp.Status != SyncLockStatus.LockAcquired)
-                        {
-                            return new IpcResponse
-                            {
-                                RequestId = request.RequestId,
-                                Success = true,
-                                DataJson = JsonSerializer.Serialize(driveLockResp)
-                            };
-                        }
-
-                        if (!IsCoordinatorTemporarilySkipped(config.CoordinatorUrl))
-                        {
-                            try
-                            {
-                                using var coordCts = new CancellationTokenSource(1200);
-                                var postResp = await HttpClient.PostAsJsonAsync($"{config.CoordinatorUrl}/api/lock/acquire", lockReq, coordCts.Token);
-                                var coordResponse = await postResp.Content.ReadFromJsonAsync<LockResponse>(cancellationToken: coordCts.Token);
-                                if (coordResponse != null && coordResponse.Status == SyncLockStatus.LockDeniedBusy)
-                                {
-                                    await DriveService.ReleaseProjectLockAsync(lockReq.ProjectId, driveLockResp.LockToken ?? "", lockReq.User, ct);
-                                    return new IpcResponse
-                                    {
-                                        RequestId = request.RequestId,
-                                        Success = true,
-                                        DataJson = JsonSerializer.Serialize(coordResponse)
-                                    };
-                                }
-                            }
-                            catch
-                            {
-                                MarkCoordinatorUnavailable();
-                            }
-                        }
-
                         return new IpcResponse
                         {
                             RequestId = request.RequestId,
-                            Success = true,
+                            Success = driveLockResp.Status != SyncLockStatus.Error,
+                            ErrorMessage = driveLockResp.Status == SyncLockStatus.Error ? driveLockResp.Message : null,
                             DataJson = JsonSerializer.Serialize(driveLockResp)
                         };
 
@@ -341,24 +272,6 @@ namespace RevitDriveConnector.Core.Services
                         string hbToken = hbReq != null && hbReq.TryGetValue("LockToken", out var ht) ? ht : "";
                         string hbUser = hbReq != null && hbReq.TryGetValue("User", out var hu) ? hu : "";
                         bool hbOk = await DriveService.HeartbeatProjectLockAsync(hbProj, hbToken, hbUser, config.SyncTimeoutSeconds, ct);
-                        if (hbOk && !IsCoordinatorTemporarilySkipped(config.CoordinatorUrl))
-                        {
-                            try
-                            {
-                                using var coordCts = new CancellationTokenSource(1000);
-                                await HttpClient.PostAsJsonAsync($"{config.CoordinatorUrl}/api/lock/acquire", new LockRequest
-                                {
-                                    ProjectId = hbProj,
-                                    User = hbUser,
-                                    Machine = Environment.MachineName,
-                                    TimeoutSeconds = config.SyncTimeoutSeconds
-                                }, coordCts.Token);
-                            }
-                            catch
-                            {
-                                MarkCoordinatorUnavailable();
-                            }
-                        }
                         return new IpcResponse { RequestId = request.RequestId, Success = hbOk };
 
                     case IpcCommand.ReleaseSyncLock:
@@ -405,47 +318,20 @@ namespace RevitDriveConnector.Core.Services
                                     expectedBaseVersion,
                                     expectedBaseHash,
                                     isInitialCreate: false,
-                                    ct: ct);
+                                    ct: ct,
+                                    progressCallback: progressCallback);
                             }
                             finally
                             {
                                 if (!string.IsNullOrWhiteSpace(token))
                                 {
                                     try { await DriveService.ReleaseProjectLockAsync(upProj, token, user, CancellationToken.None); } catch { }
-                                    if (!IsCoordinatorTemporarilySkipped(config.CoordinatorUrl))
-                                    {
-                                        try
-                                        {
-                                            using var relCts = new CancellationTokenSource(1200);
-                                            await HttpClient.PostAsJsonAsync($"{config.CoordinatorUrl}/api/lock/release", new
-                                            {
-                                                ProjectId = upProj,
-                                                LockToken = token,
-                                                User = user
-                                            }, relCts.Token);
-                                        }
-                                        catch { MarkCoordinatorUnavailable(); }
-                                    }
                                 }
                             }
                         }
                         else
                         {
                             await DriveService.ReleaseProjectLockAsync(upProj, token, user, ct);
-                            if (!IsCoordinatorTemporarilySkipped(config.CoordinatorUrl))
-                            {
-                                try
-                                {
-                                    using var relCts = new CancellationTokenSource(1200);
-                                    await HttpClient.PostAsJsonAsync($"{config.CoordinatorUrl}/api/lock/release", new
-                                    {
-                                        ProjectId = upProj,
-                                        LockToken = token,
-                                        User = user
-                                    }, relCts.Token);
-                                }
-                                catch { MarkCoordinatorUnavailable(); }
-                            }
                         }
 
                         return new IpcResponse
@@ -476,7 +362,7 @@ namespace RevitDriveConnector.Core.Services
                         string newCentral = createReq?["CentralPath"] ?? "";
                         string newUser = createReq?["User"] ?? "";
 
-                        await DriveService.CreateCloudProjectAsync(newProj, newCentral, newUser, ct);
+                        await DriveService.CreateCloudProjectAsync(newProj, newCentral, newUser, ct, progressCallback);
                         await DriveService.UpdateActiveUserSessionAsync(newProj, newUser, Environment.MachineName, isActive: true, isSyncing: false, ct);
 
                         return new IpcResponse
@@ -492,7 +378,7 @@ namespace RevitDriveConnector.Core.Services
                         {
                             string pDir = await DriveService.SyncBorrowRequestsFileAsync(bReq.ProjectId, ct);
                             BorrowRequestManager.SendRequest(pDir, bReq);
-                            await DriveService.PushConnectorStateToCloudAsync(bReq.ProjectId, pDir, ct);
+                            await DriveService.PushBorrowRequestsFileAsync(bReq.ProjectId, pDir, ct);
                             return new IpcResponse { RequestId = request.RequestId, Success = true, DataJson = JsonSerializer.Serialize(bReq) };
                         }
                         return new IpcResponse { RequestId = request.RequestId, Success = false, ErrorMessage = "Dati richiesta prestito nulli" };
@@ -501,8 +387,8 @@ namespace RevitDriveConnector.Core.Services
                         var pUserReq = JsonSerializer.Deserialize<Dictionary<string, string>>(request.PayloadJson);
                         string pProj = pUserReq?["ProjectId"] ?? "";
                         string pUser = pUserReq?["User"] ?? "";
-                        string projCloudDir = await DriveService.SyncBorrowRequestsFileAsync(pProj, ct);
-                        var pending = BorrowRequestManager.GetPendingRequestsForUser(projCloudDir, pUser);
+                        string projLocalDir = await DriveService.SyncBorrowRequestsFileAsync(pProj, ct);
+                        var pending = BorrowRequestManager.GetPendingRequestsForUser(projLocalDir, pUser);
                         return new IpcResponse { RequestId = request.RequestId, Success = true, DataJson = JsonSerializer.Serialize(pending) };
 
                     case IpcCommand.GetOutgoingBorrowRequests:
@@ -510,10 +396,10 @@ namespace RevitDriveConnector.Core.Services
                         string outProj = outReq != null && outReq.TryGetValue("ProjectId", out var opOut) ? opOut : "";
                         string outUser = outReq != null && outReq.TryGetValue("User", out var ouOut) ? ouOut : "";
                         bool skipPull = outReq != null && outReq.TryGetValue("SkipCloudPull", out var spVal) && string.Equals(spVal, "true", StringComparison.OrdinalIgnoreCase);
-                        string outCloudDir = skipPull
-                            ? await DriveService.ResolveAndSyncConnectorDirAsync(outProj, pullFromCloud: false, ct)
+                        string outLocalDir = skipPull
+                            ? DriveService.GetLocalProjectDir(outProj)
                             : await DriveService.SyncBorrowRequestsFileAsync(outProj, ct);
-                        var outgoing = BorrowRequestManager.GetOutgoingRequestsForUser(outCloudDir, outUser);
+                        var outgoing = BorrowRequestManager.GetOutgoingRequestsForUser(outLocalDir, outUser);
                         return new IpcResponse { RequestId = request.RequestId, Success = true, DataJson = JsonSerializer.Serialize(outgoing) };
 
                     case IpcCommand.RespondToBorrowRequest:
@@ -524,11 +410,11 @@ namespace RevitDriveConnector.Core.Services
                         string rUser = respDto?["User"] ?? "";
                         var statusEnum = rStatus == "Granted" ? BorrowRequestStatus.Granted : BorrowRequestStatus.Denied;
 
-                        string rCloudDir = await DriveService.SyncBorrowRequestsFileAsync(rProj, ct);
-                        bool ok = BorrowRequestManager.RespondToRequest(rCloudDir, rId, statusEnum, rUser);
+                        string rLocalDir = await DriveService.SyncBorrowRequestsFileAsync(rProj, ct);
+                        bool ok = BorrowRequestManager.RespondToRequest(rLocalDir, rId, statusEnum, rUser);
                         if (ok)
                         {
-                            await DriveService.PushConnectorStateToCloudAsync(rProj, rCloudDir, ct);
+                            await DriveService.PushBorrowRequestsFileAsync(rProj, rLocalDir, ct);
                         }
                         return new IpcResponse { RequestId = request.RequestId, Success = ok };
 
@@ -537,11 +423,11 @@ namespace RevitDriveConnector.Core.Services
                         string cProj = compDto?["ProjectId"] ?? "";
                         string cIdsRaw = compDto?["RequestIds"] ?? "";
                         var cIds = cIdsRaw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-                        string cCloudDir = await DriveService.SyncBorrowRequestsFileAsync(cProj, ct);
-                        bool compOk = BorrowRequestManager.MarkRequestsCompleted(cCloudDir, cIds);
+                        string cLocalDir = await DriveService.SyncBorrowRequestsFileAsync(cProj, ct);
+                        bool compOk = BorrowRequestManager.MarkRequestsCompleted(cLocalDir, cIds);
                         if (compOk)
                         {
-                            await DriveService.PushConnectorStateToCloudAsync(cProj, cCloudDir, ct);
+                            await DriveService.PushBorrowRequestsFileAsync(cProj, cLocalDir, ct);
                         }
                         return new IpcResponse { RequestId = request.RequestId, Success = compOk };
 
@@ -550,7 +436,7 @@ namespace RevitDriveConnector.Core.Services
                         string intProj = intReq?["ProjectId"] ?? "";
                         string intUser = intReq?["User"] ?? "";
 
-                        var integrityResult = await DriveService.VerifyIntegrityAndAlignAsync(intProj, intUser, ct);
+                        var integrityResult = await DriveService.VerifyIntegrityAndAlignAsync(intProj, intUser, ct, progressCallback);
                         return new IpcResponse
                         {
                             RequestId = request.RequestId,
@@ -587,12 +473,26 @@ namespace RevitDriveConnector.Core.Services
                         var liveQuery = JsonSerializer.Deserialize<Dictionary<string, string>>(request.PayloadJson);
                         string lqProj = liveQuery != null && liveQuery.TryGetValue("ProjectId", out var lp) ? lp : "";
                         string lqUser = liveQuery != null && liveQuery.TryGetValue("User", out var lu) ? lu : "";
-                        var remoteLocks = await DriveService.GetRemoteLiveEditsAsync(lqProj, lqUser, ct);
+                        string lqMachine = liveQuery != null && liveQuery.TryGetValue("Machine", out var lm) ? lm : Environment.MachineName;
+                        var remoteLocks = await DriveService.GetRemoteLiveEditsAsync(lqProj, lqUser, lqMachine, ct);
                         return new IpcResponse
                         {
                             RequestId = request.RequestId,
                             Success = true,
                             DataJson = JsonSerializer.Serialize(remoteLocks)
+                        };
+
+                    case IpcCommand.PollConnectorState:
+                        var pollQuery = JsonSerializer.Deserialize<Dictionary<string, string>>(request.PayloadJson);
+                        string pollProj = pollQuery != null && pollQuery.TryGetValue("ProjectId", out var pp) ? pp : "";
+                        string pollUser = pollQuery != null && pollQuery.TryGetValue("User", out var pu) ? pu : "";
+                        string pollMachine = pollQuery != null && pollQuery.TryGetValue("Machine", out var pm) ? pm : Environment.MachineName;
+                        var pollSnapshot = await DriveService.PollConnectorStateAsync(pollProj, pollUser, pollMachine, ct);
+                        return new IpcResponse
+                        {
+                            RequestId = request.RequestId,
+                            Success = true,
+                            DataJson = JsonSerializer.Serialize(pollSnapshot)
                         };
 
                     default:
@@ -606,6 +506,7 @@ namespace RevitDriveConnector.Core.Services
             }
             catch (Exception ex)
             {
+                AppLogger.Error("LocalServiceEngine", $"Errore gestione comando {request.Command}", ex);
                 return new IpcResponse
                 {
                     RequestId = request.RequestId,

@@ -91,9 +91,6 @@ namespace RevitDriveConnector.Addin.Services
         private static BorrowGrantExternalHandler? _grantHandler;
         private static ExternalEvent? _grantExternalEvent;
 
-        private static DateTime _lastCheckTime = DateTime.MinValue;
-        private static bool _isChecking = false;
-
         public static void InitializeExternalEvent()
         {
             if (_grantExternalEvent == null)
@@ -131,120 +128,66 @@ namespace RevitDriveConnector.Addin.Services
 
         public static void OnIdlingCheck(UIApplication uiapp)
         {
-            if (_isChecking) return;
-            if ((DateTime.UtcNow - _lastCheckTime).TotalSeconds < 15.0) return;
-
-            _lastCheckTime = DateTime.UtcNow;
-
-            try
-            {
-                var doc = uiapp.ActiveUIDocument?.Document;
-                if (doc == null || !doc.IsWorkshared) return;
-
-                string centralPath = SynchronizationCoordinator.GetCentralModelPath(doc);
-                if (!SynchronizationCoordinator.IsDriveManagedPath(centralPath)) return;
-
-                string projectId = SynchronizationCoordinator.ExtractProjectName(centralPath);
-                string username = doc.Application.Username;
-
-                if (string.IsNullOrEmpty(projectId) || string.IsNullOrEmpty(username)) return;
-
-                _isChecking = true;
-
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        await CheckRequestsAsync(projectId, username);
-                    }
-                    finally
-                    {
-                        _isChecking = false;
-                    }
-                });
-            }
-            catch
-            {
-                _isChecking = false;
-            }
+            // Unified .connector polling is now handled by LiveElementLockService's background poller
+            // (1 single Google Drive API call for Live Locks + Borrow Requests + Sync Lock).
         }
 
-        private static async Task CheckRequestsAsync(string projectId, string username)
+        public static void ProcessPolledRequests(
+            string username,
+            List<BorrowRequest>? pendingIncoming,
+            List<BorrowRequest>? outgoing)
         {
-            var payload = JsonSerializer.Serialize(new { ProjectId = projectId, User = username });
-
-            var respInc = await IpcClient.SendRequestAsync(new IpcRequest
+            if (pendingIncoming != null)
             {
-                Command = IpcCommand.GetPendingBorrowRequests,
-                PayloadJson = payload
-            }, timeoutMs: 8000);
-
-            if (respInc.Success && !string.IsNullOrEmpty(respInc.DataJson))
-            {
-                var list = JsonSerializer.Deserialize<List<BorrowRequest>>(respInc.DataJson);
-                if (list != null)
+                foreach (var req in pendingIncoming)
                 {
-                    foreach (var req in list)
+                    bool shouldNotify = false;
+                    lock (SyncLock)
                     {
-                        bool shouldNotify = false;
-                        lock (SyncLock)
+                        if (!NotifiedRequestIds.Contains(req.RequestId))
                         {
-                            if (!NotifiedRequestIds.Contains(req.RequestId))
-                            {
-                                NotifiedRequestIds.Add(req.RequestId);
-                                shouldNotify = true;
-                            }
+                            NotifiedRequestIds.Add(req.RequestId);
+                            shouldNotify = true;
                         }
+                    }
 
-                        if (shouldNotify)
+                    if (shouldNotify)
+                    {
+                        App.UiDispatcher?.BeginInvoke(new Action(() =>
                         {
-                            App.UiDispatcher?.Invoke(() =>
-                            {
-                                ShowToast(req, username, isInformational: false);
-                            });
-                        }
+                            ShowToast(req, username, isInformational: false);
+                        }));
                     }
                 }
             }
 
-            var outgoingPayload = JsonSerializer.Serialize(new { ProjectId = projectId, User = username, SkipCloudPull = "true" });
-            var respOut = await IpcClient.SendRequestAsync(new IpcRequest
+            if (outgoing != null)
             {
-                Command = IpcCommand.GetOutgoingBorrowRequests,
-                PayloadJson = outgoingPayload
-            }, timeoutMs: 3000);
-
-            if (respOut.Success && !string.IsNullOrEmpty(respOut.DataJson))
-            {
-                var list = JsonSerializer.Deserialize<List<BorrowRequest>>(respOut.DataJson);
-                if (list != null)
+                foreach (var req in outgoing)
                 {
-                    foreach (var req in list)
+                    if (req.Status == BorrowRequestStatus.Pending) continue;
+
+                    string notifyKey = $"{req.RequestId}_{req.Status}";
+                    bool shouldNotify = false;
+
+                    lock (SyncLock)
                     {
-                        if (req.Status == BorrowRequestStatus.Pending) continue;
-
-                        string notifyKey = $"{req.RequestId}_{req.Status}";
-                        bool shouldNotify = false;
-
-                        lock (SyncLock)
+                        if (!NotifiedRequestIds.Contains(notifyKey))
                         {
-                            if (!NotifiedRequestIds.Contains(notifyKey))
+                            NotifiedRequestIds.Add(notifyKey);
+                            if (req.RespondedAtUtc.HasValue && (DateTime.UtcNow - req.RespondedAtUtc.Value).TotalMinutes < 20)
                             {
-                                NotifiedRequestIds.Add(notifyKey);
-                                if (req.RespondedAtUtc.HasValue && (DateTime.UtcNow - req.RespondedAtUtc.Value).TotalMinutes < 20)
-                                {
-                                    shouldNotify = true;
-                                }
+                                shouldNotify = true;
                             }
                         }
+                    }
 
-                        if (shouldNotify)
+                    if (shouldNotify)
+                    {
+                        App.UiDispatcher?.BeginInvoke(new Action(() =>
                         {
-                            App.UiDispatcher?.Invoke(() =>
-                            {
-                                ShowToast(req, username, isInformational: true);
-                            });
-                        }
+                            ShowToast(req, username, isInformational: true);
+                        }));
                     }
                 }
             }

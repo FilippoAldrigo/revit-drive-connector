@@ -1,28 +1,48 @@
 using System;
-using System.IO;
-using System.IO.Pipes;
-using System.Text;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using RevitDriveConnector.Core.Models;
 using RevitDriveConnector.Core.Services;
 
 namespace RevitDriveConnector.Core.IPC
 {
+    /// <summary>
+    /// Direct in-process service dispatcher (100% serverless, no background Daemon/NamedPipe required).
+    /// Supports real-time TransferProgressInfo callbacks for chunked uploads/downloads.
+    /// </summary>
     public class NamedPipeIpcClient
     {
-        public const string PipeName = "RevitDriveConnector_IPC";
-        public static Func<Task>? EnsureDaemonRunningHandler { get; set; }
-
-        public async Task<IpcResponse> SendRequestAsync(IpcRequest request, int timeoutMs = 10000, CancellationToken ct = default)
+        public async Task<IpcResponse> SendRequestAsync(
+            IpcRequest request,
+            int timeoutMs = 10000,
+            CancellationToken ct = default,
+            Action<TransferProgressInfo>? progressCallback = null)
         {
-            // Esegue direttamente nel motore in-process (LocalServiceEngine) evitando qualsiasi blocco
-            // di processi esterni .exe da parte di Windows 11 Smart App Control o firewall locali.
             try
             {
-                using var timeoutCts = new CancellationTokenSource(timeoutMs);
+                using var timeoutCts = timeoutMs > 0
+                    ? new CancellationTokenSource(timeoutMs)
+                    : new CancellationTokenSource();
                 using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
-                return await LocalServiceEngine.HandleIpcRequestAsync(request, linkedCts.Token);
+                return await LocalServiceEngine.HandleIpcRequestAsync(request, linkedCts.Token, progressCallback);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return new IpcResponse
+                {
+                    RequestId = request.RequestId,
+                    Success = false,
+                    ErrorMessage = "Operazione annullata dall'utente."
+                };
+            }
+            catch (OperationCanceledException)
+            {
+                return new IpcResponse
+                {
+                    RequestId = request.RequestId,
+                    Success = false,
+                    ErrorMessage = $"Timeout dell'operazione cloud ({timeoutMs / 1000}s). Verifica la connessione Internet e riprova."
+                };
             }
             catch (Exception ex)
             {

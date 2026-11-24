@@ -137,18 +137,6 @@ namespace RevitDriveConnector.Addin.Services
             string localLinksDir = Path.Combine(projectDir, "Links");
             Directory.CreateDirectory(localLinksDir);
 
-            string projectName = Path.GetFileName(projectDir);
-            string cloudStoragePath = SynchronizationCoordinator.IsDriveManagedPath(doc.PathName)
-                ? GetCloudProjectDirectory(projectName)
-                : string.Empty;
-
-            string? cloudLinksDir = null;
-            if (!string.IsNullOrEmpty(cloudStoragePath))
-            {
-                cloudLinksDir = Path.Combine(cloudStoragePath, "Links");
-                try { Directory.CreateDirectory(cloudLinksDir); } catch { }
-            }
-
             var links = GetProjectLinks(doc);
             var toFix = links.Where(l => !l.IsInsideDriveOrRelative || l.PathType == PathType.Absolute || l.Status == LinkedFileStatus.NotFound).ToList();
 
@@ -181,22 +169,6 @@ namespace RevitDriveConnector.Addin.Services
                             if (!File.Exists(targetLocalFile) || new FileInfo(sourcePath).Length != new FileInfo(targetLocalFile).Length)
                             {
                                 File.Copy(sourcePath, targetLocalFile, true);
-                            }
-
-                            if (cloudLinksDir != null)
-                            {
-                                string targetCloudFile = Path.Combine(cloudLinksDir, fileName);
-                                if (!File.Exists(targetCloudFile) || new FileInfo(sourcePath).Length != new FileInfo(targetCloudFile).Length)
-                                {
-                                    try { File.Copy(sourcePath, targetCloudFile, true); } catch { }
-                                }
-                            }
-                        }
-                        else
-                        {
-                            if (cloudLinksDir != null && File.Exists(Path.Combine(cloudLinksDir, fileName)) && !File.Exists(targetLocalFile))
-                            {
-                                try { File.Copy(Path.Combine(cloudLinksDir, fileName), targetLocalFile, true); } catch { }
                             }
                         }
 
@@ -256,9 +228,6 @@ namespace RevitDriveConnector.Addin.Services
                 if (string.IsNullOrEmpty(projectDir)) return;
 
                 string localLinksDir = Path.Combine(projectDir, "Links");
-                string projectName = Path.GetFileName(projectDir);
-                string cloudDir = GetCloudProjectDirectory(projectName);
-                string cloudLinksDir = !string.IsNullOrEmpty(cloudDir) ? Path.Combine(cloudDir, "Links") : string.Empty;
 
                 var links = GetProjectLinks(doc);
                 var broken = links.Where(l =>
@@ -276,16 +245,6 @@ namespace RevitDriveConnector.Addin.Services
                     {
                         string fileName = item.Name;
                         string candidateLocal = Path.Combine(localLinksDir, fileName);
-
-                        if (!File.Exists(candidateLocal) && !string.IsNullOrEmpty(cloudLinksDir) && File.Exists(Path.Combine(cloudLinksDir, fileName)))
-                        {
-                            try
-                            {
-                                Directory.CreateDirectory(localLinksDir);
-                                File.Copy(Path.Combine(cloudLinksDir, fileName), candidateLocal, true);
-                            }
-                            catch { }
-                        }
 
                         if (File.Exists(candidateLocal))
                         {
@@ -319,7 +278,7 @@ namespace RevitDriveConnector.Addin.Services
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[ExternalLinkManager] Errore auto-heal: {ex.Message}");
+                AppLogger.Warn("ExternalLinkManager", "Errore auto-heal link", ex);
             }
         }
 
@@ -347,22 +306,6 @@ namespace RevitDriveConnector.Addin.Services
             {
                 return string.Empty;
             }
-        }
-
-        private static string GetCloudProjectDirectory(string projectName)
-        {
-            try
-            {
-                var config = Core.Models.AppConfig.Load();
-                if (!string.IsNullOrEmpty(config.CloudStoragePath))
-                {
-                    string candidate = DriveShortcutResolver.ResolveProjectDirectory(config.CloudStoragePath, projectName);
-                    if (Directory.Exists(candidate)) return candidate;
-                }
-            }
-            catch { }
-
-            return string.Empty;
         }
     }
 }

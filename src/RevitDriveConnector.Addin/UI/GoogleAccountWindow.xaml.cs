@@ -20,7 +20,7 @@ namespace RevitDriveConnector.Addin.UI
  IconHelper.ApplyWindowIcon(this);
  ApplyLocalization();
 
- Loaded += async (s, e) => { await App.EnsureDaemonRunningAsync(); await RefreshStatusAsync(); };
+ Loaded += async (s, e) => await RefreshStatusAsync();
  }
 
  private void ApplyLocalization()

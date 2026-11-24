@@ -14,6 +14,35 @@ namespace RevitDriveConnector.Core.Models
         Error
     }
 
+    public class FileLockData
+    {
+        public const int DefaultSkewToleranceSeconds = 15;
+
+        [JsonPropertyName("projectId")]
+        public string ProjectId { get; set; } = string.Empty;
+
+        [JsonPropertyName("user")]
+        public string User { get; set; } = string.Empty;
+
+        [JsonPropertyName("machine")]
+        public string Machine { get; set; } = string.Empty;
+
+        [JsonPropertyName("lockToken")]
+        public string LockToken { get; set; } = string.Empty;
+
+        [JsonPropertyName("acquiredAtUtc")]
+        public DateTime AcquiredAtUtc { get; set; }
+
+        [JsonPropertyName("expiresAtUtc")]
+        public DateTime ExpiresAtUtc { get; set; }
+
+        [JsonPropertyName("durationSeconds")]
+        public int DurationSeconds { get; set; } = 120;
+
+        [JsonPropertyName("skewToleranceSeconds")]
+        public int SkewToleranceSeconds { get; set; } = DefaultSkewToleranceSeconds;
+    }
+
     public class LockRequest
     {
         [JsonPropertyName("projectId")]
@@ -26,7 +55,7 @@ namespace RevitDriveConnector.Core.Models
         public string Machine { get; set; } = string.Empty;
 
         [JsonPropertyName("timeoutSeconds")]
-        public int TimeoutSeconds { get; set; } = 60;
+        public int TimeoutSeconds { get; set; } = 120;
     }
 
     public class LockResponse
@@ -57,12 +86,6 @@ namespace RevitDriveConnector.Core.Models
     {
         [JsonPropertyName("status")]
         public string Status { get; set; } = "Online";
-
-        [JsonPropertyName("coordinatorUrl")]
-        public string CoordinatorUrl { get; set; } = string.Empty;
-
-        [JsonPropertyName("cloudStoragePath")]
-        public string CloudStoragePath { get; set; } = string.Empty;
 
         [JsonPropertyName("localCachePath")]
         public string LocalCachePath { get; set; } = string.Empty;
@@ -145,7 +168,9 @@ namespace RevitDriveConnector.Core.Models
         public string CloudFolderId { get; set; } = string.Empty;
 
         [JsonIgnore]
-        public string SourceDisplay => IsSharedWithMe ? $"{Loc.Tr("Open_SharedBy")} {SharedBy}" : Loc.Tr("Open_MyDrive");
+        public string SourceDisplay => SourceType == "SharedDrive"
+            ? $"Shared Drive ({SharedBy})"
+            : (IsSharedWithMe ? $"{Loc.Tr("Open_SharedBy")} {SharedBy}" : Loc.Tr("Open_MyDrive"));
 
         [JsonIgnore]
         public string StatusDisplay => IsMountedLocally ? Loc.Tr("Open_ReadyLocal") : Loc.Tr("Open_OnCloud");
@@ -183,6 +208,12 @@ namespace RevitDriveConnector.Core.Models
         [JsonPropertyName("wasUpdatedFromCloud")]
         public bool WasUpdatedFromCloud { get; set; }
 
+        [JsonPropertyName("hasPendingLocalUpload")]
+        public bool HasPendingLocalUpload { get; set; }
+
+        [JsonPropertyName("pendingUploadCanRetryDirectly")]
+        public bool PendingUploadCanRetryDirectly { get; set; }
+
         [JsonPropertyName("lastSyncUser")]
         public string LastSyncUser { get; set; } = string.Empty;
 
@@ -217,6 +248,8 @@ namespace RevitDriveConnector.Core.Models
         public string RoleDisplay => Role switch
         {
             "owner" => Loc.Tr("Common_RoleOwner"),
+            "organizer" => Loc.Tr("Common_RoleOwner"),
+            "fileOrganizer" => Loc.Tr("Common_RoleEditor"),
             "writer" => Loc.Tr("Common_RoleEditor"),
             "reader" => Loc.Tr("Common_RoleViewer"),
             _ => Role
@@ -267,6 +300,9 @@ namespace RevitDriveConnector.Core.Models
         [JsonPropertyName("projectId")]
         public string ProjectId { get; set; } = string.Empty;
 
+        [JsonPropertyName("clientId")]
+        public string ClientId { get; set; } = string.Empty;
+
         [JsonPropertyName("user")]
         public string User { get; set; } = string.Empty;
 
@@ -285,6 +321,9 @@ namespace RevitDriveConnector.Core.Models
         [JsonPropertyName("elementUniqueId")]
         public string ElementUniqueId { get; set; } = string.Empty;
 
+        [JsonPropertyName("ownerClientId")]
+        public string OwnerClientId { get; set; } = string.Empty;
+
         [JsonPropertyName("ownerUser")]
         public string OwnerUser { get; set; } = string.Empty;
 
@@ -293,5 +332,35 @@ namespace RevitDriveConnector.Core.Models
 
         [JsonPropertyName("updatedUtc")]
         public DateTime UpdatedUtc { get; set; }
+    }
+
+    public class TransferProgressInfo
+    {
+        public string Phase { get; set; } = string.Empty;
+        public string CurrentFileName { get; set; } = string.Empty;
+        public int CompletedFiles { get; set; }
+        public int TotalFiles { get; set; }
+        public long BytesTransferred { get; set; }
+        public long TotalBytes { get; set; }
+        public double BytesPerSecond { get; set; }
+
+        public double Percentage => TotalBytes > 0
+            ? Math.Min(100.0, Math.Max(0.0, (double)BytesTransferred * 100.0 / TotalBytes))
+            : (TotalFiles > 0 ? Math.Min(100.0, (double)CompletedFiles * 100.0 / TotalFiles) : 0.0);
+    }
+
+    public class ConnectorPollSnapshot
+    {
+        [JsonPropertyName("remoteLiveLocks")]
+        public List<RemoteElementLockInfo> RemoteLiveLocks { get; set; } = new();
+
+        [JsonPropertyName("pendingBorrowRequests")]
+        public List<BorrowRequest> PendingBorrowRequests { get; set; } = new();
+
+        [JsonPropertyName("outgoingBorrowRequests")]
+        public List<BorrowRequest> OutgoingBorrowRequests { get; set; } = new();
+
+        [JsonPropertyName("activeSyncLock")]
+        public FileLockData? ActiveSyncLock { get; set; }
     }
 }

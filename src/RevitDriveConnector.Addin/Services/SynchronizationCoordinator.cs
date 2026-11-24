@@ -5,9 +5,10 @@ using System.Threading;
 using System.Threading.Tasks;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Events;
-using Autodesk.Revit.UI;
+using RevitDriveConnector.Addin.UI;
 using RevitDriveConnector.Core.IPC;
 using RevitDriveConnector.Core.Models;
+using RevitDriveConnector.Core.Utils;
 
 namespace RevitDriveConnector.Addin.Services
 {
@@ -61,11 +62,12 @@ namespace RevitDriveConnector.Addin.Services
                             User = user,
                             Machine = Environment.MachineName
                         })
-                    });
+                    }, timeoutMs: 15000);
                 });
             }
-            catch
+            catch (Exception ex)
             {
+                AppLogger.Warn("SynchronizationCoordinator", "OnDocumentOpened warning", ex);
             }
         }
 
@@ -95,11 +97,12 @@ namespace RevitDriveConnector.Addin.Services
                             User = user,
                             Machine = Environment.MachineName
                         })
-                    });
+                    }, timeoutMs: 10000);
                 });
             }
-            catch
+            catch (Exception ex)
             {
+                AppLogger.Warn("SynchronizationCoordinator", "OnDocumentClosing warning", ex);
             }
         }
 
@@ -125,7 +128,7 @@ namespace RevitDriveConnector.Addin.Services
                     try { e.Cancel(); } catch { }
                 }
                 System.Windows.MessageBox.Show(
-                    "Impossibile scaricare l'allineamento aggiornato da Google Drive per eseguire 'Ricarica Ultime Modifiche'. Verifica la connessione e l'account Google.",
+                    "Impossibile scaricare l'allineamento aggiornato da Google Drive per eseguire 'Ricarica Ultime Modifiche'. Verifica la connessione, l'account Google o eventuali upload locali pendenti.",
                     "Drive Connector - Errore Allineamento",
                     System.Windows.MessageBoxButton.OK,
                     System.Windows.MessageBoxImage.Warning);
@@ -146,29 +149,21 @@ namespace RevitDriveConnector.Addin.Services
                 string projectId = ExtractProjectName(centralPath);
                 string user = doc.Application.Username;
 
-                var payload = JsonSerializer.Serialize(new
+                var gatekeeper = new SyncGatekeeperDialog(projectId, user);
+                bool? gateResult = gatekeeper.ShowDialog();
+                if (gateResult == true && gatekeeper.IsAlignedAndReady)
                 {
-                    ProjectId = projectId,
-                    User = user
-                });
+                    return true;
+                }
 
-                var task = Task.Run(() => IpcClient.SendRequestAsync(new IpcRequest
+                if (gatekeeper.HasPendingLocalUpload)
                 {
-                    Command = IpcCommand.VerifySyncIntegrity,
-                    PayloadJson = payload
-                }, timeoutMs: 120000));
-
-                task.Wait();
-                var resp = task.Result;
-                if (resp.Success && !string.IsNullOrEmpty(resp.DataJson))
-                {
-                    var result = JsonSerializer.Deserialize<SyncIntegrityResult>(resp.DataJson);
-                    return result?.IsAligned ?? true;
+                    return HandlePendingLocalUploadRecovery(projectId, centralPath, user, gatekeeper.PendingUploadCanRetryDirectly, gatekeeper.ErrorMessage);
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[SynchronizationCoordinator] AlignCentralFromCloudSync warning: {ex.Message}");
+                AppLogger.Warn("SynchronizationCoordinator", "AlignCentralFromCloudSync warning", ex);
             }
 
             return false;
@@ -198,13 +193,16 @@ namespace RevitDriveConnector.Addin.Services
                                 LockToken = lockToken,
                                 User = user
                             })
-                        }, timeoutMs: 5000, ct: ct);
+                        }, timeoutMs: 10000, ct: ct);
                     }
                     catch (OperationCanceledException)
                     {
                         break;
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        AppLogger.Warn("SynchronizationCoordinator", "Heartbeat tick warning", ex);
+                    }
                 }
             }, ct);
         }
@@ -229,10 +227,7 @@ namespace RevitDriveConnector.Addin.Services
             if (doc == null || !doc.IsWorkshared) return;
 
             string centralPath = GetCentralModelPath(doc);
-            if (!IsDriveManagedPath(centralPath))
-            {
-                return;
-            }
+            if (!IsDriveManagedPath(centralPath)) return;
 
             LastSyncCancelled = false;
             LastUploadFailed = false;
@@ -240,36 +235,47 @@ namespace RevitDriveConnector.Addin.Services
             CurrentExpectedBaseVersion = null;
             CurrentExpectedBaseHash = null;
 
+            string projectId = ExtractProjectName(centralPath);
+            string user = doc.Application.Username;
+            string localProjectDir = Path.Combine(AppConfig.Load().LocalCachePath, projectId);
+
             try
             {
-                string projectId = ExtractProjectName(centralPath);
-                string user = doc.Application.Username;
+                // 0. Check for pending un-uploaded local sync BEFORE doing anything destructive!
+                var pending = CentralSnapshotHelper.ReadPendingUpload(localProjectDir);
+                if (pending != null)
+                {
+                    bool recovered = HandlePendingLocalUploadRecovery(projectId, centralPath, user, canRetryDirectlyHint: null, detailMessage: pending.LastError);
+                    if (!recovered)
+                    {
+                        LastSyncCancelled = true;
+                        if (e.Cancellable) try { e.Cancel(); } catch { }
+                        return;
+                    }
+                }
 
+                // 1. Acquire distributed Google Drive sync lock
+                var cfg = AppConfig.Load();
                 var lockRequest = new LockRequest
                 {
                     ProjectId = projectId,
                     User = user,
                     Machine = Environment.MachineName,
-                    TimeoutSeconds = 90
+                    TimeoutSeconds = Math.Max(120, cfg.SyncTimeoutSeconds)
                 };
 
-                var ipcReq = new IpcRequest
+                var respTask = Task.Run(() => IpcClient.SendRequestAsync(new IpcRequest
                 {
                     Command = IpcCommand.AcquireSyncLock,
                     PayloadJson = JsonSerializer.Serialize(lockRequest)
-                };
-
-                var respTask = Task.Run(() => IpcClient.SendRequestAsync(ipcReq, timeoutMs: 25000));
+                }, timeoutMs: 30000));
                 respTask.Wait();
                 var resp = respTask.Result;
 
                 if (!resp.Success || string.IsNullOrEmpty(resp.DataJson))
                 {
                     LastSyncCancelled = true;
-                    if (e.Cancellable)
-                    {
-                        try { e.Cancel(); } catch { }
-                    }
+                    if (e.Cancellable) try { e.Cancel(); } catch { }
                     System.Windows.MessageBox.Show(
                         $"Impossibile acquisire il lock di sincronizzazione con Google Drive:\n{resp.ErrorMessage ?? "Risposta vuota"}\n\nLa sincronizzazione è stata annullata per proteggere il modello.",
                         "Drive Sync Bloccato",
@@ -282,10 +288,7 @@ namespace RevitDriveConnector.Addin.Services
                 if (lockResp == null || lockResp.Status != SyncLockStatus.LockAcquired)
                 {
                     LastSyncCancelled = true;
-                    if (e.Cancellable)
-                    {
-                        try { e.Cancel(); } catch { }
-                    }
+                    if (e.Cancellable) try { e.Cancel(); } catch { }
                     string holder = lockResp?.CurrentHolder ?? "un altro utente";
                     string msg = !string.IsNullOrWhiteSpace(lockResp?.Message)
                         ? lockResp.Message
@@ -301,7 +304,8 @@ namespace RevitDriveConnector.Addin.Services
                 CurrentLockToken = lockResp.LockToken;
                 StartLockHeartbeat(projectId, CurrentLockToken ?? "", user);
 
-                var gatekeeper = new UI.SyncGatekeeperDialog(projectId, user);
+                // 2. Align local Central cache with Google Drive (showing live progress)
+                var gatekeeper = new SyncGatekeeperDialog(projectId, user);
                 bool? gateResult = gatekeeper.ShowDialog();
 
                 if (gateResult != true || !gatekeeper.IsAlignedAndReady)
@@ -313,11 +317,7 @@ namespace RevitDriveConnector.Addin.Services
                     CurrentExpectedBaseHash = null;
                     LastSyncCancelled = true;
 
-                    if (e.Cancellable)
-                    {
-                        try { e.Cancel(); } catch { }
-                    }
-
+                    if (e.Cancellable) try { e.Cancel(); } catch { }
                     ReleaseLockSync(projectId, tokenToRelease, user);
 
                     if (!gatekeeper.UserCancelled)
@@ -336,10 +336,24 @@ namespace RevitDriveConnector.Addin.Services
 
                 CurrentExpectedBaseVersion = gatekeeper.CloudVersion;
                 CurrentExpectedBaseHash = gatekeeper.ExpectedHash;
+
+                // 3. Anti-corruption safeguard: snapshot & mark pending upload BEFORE Revit mutates local Central!
+                CentralSnapshotHelper.CreatePreSyncSnapshot(localProjectDir);
+                CentralSnapshotHelper.MarkPendingUpload(localProjectDir, new PendingUploadMarker
+                {
+                    ProjectId = projectId,
+                    CentralPath = centralPath,
+                    User = user,
+                    ExpectedBaseVersion = CurrentExpectedBaseVersion,
+                    ExpectedBaseHash = CurrentExpectedBaseHash,
+                    CreatedAtUtc = DateTime.UtcNow
+                });
+
                 LiveElementLockService.IsSyncOrReloadActive = true;
             }
             catch (Exception ex)
             {
+                AppLogger.Error("SynchronizationCoordinator", $"Errore critico pre-sync su '{projectId}'", ex);
                 LiveElementLockService.IsSyncOrReloadActive = false;
                 StopLockHeartbeat();
                 string tokenToRelease = CurrentLockToken ?? "";
@@ -350,13 +364,10 @@ namespace RevitDriveConnector.Addin.Services
 
                 if (!string.IsNullOrEmpty(tokenToRelease))
                 {
-                    try { ReleaseLockSync(ExtractProjectName(centralPath), tokenToRelease, doc.Application.Username); } catch { }
+                    try { ReleaseLockSync(projectId, tokenToRelease, user); } catch { }
                 }
 
-                if (e.Cancellable)
-                {
-                    try { e.Cancel(); } catch { }
-                }
+                if (e.Cancellable) try { e.Cancel(); } catch { }
                 System.Windows.MessageBox.Show(
                     $"Errore critico durante la pre-sincronizzazione: {ex.Message}",
                     "Errore Drive Connector",
@@ -367,8 +378,8 @@ namespace RevitDriveConnector.Addin.Services
 
         public static void OnDocumentSynchronizedWithCentral(object? sender, DocumentSynchronizedWithCentralEventArgs e)
         {
-            StopLockHeartbeat();
-
+            // CRITICAL FIX: DO NOT stop the lock heartbeat before the cloud upload completes!
+            // Keep the distributed lock alive throughout the entire chunked upload (critical for 500 MB - 1 GB models).
             string token = CurrentLockToken ?? string.Empty;
             long? expectedBaseVersion = CurrentExpectedBaseVersion;
             string? expectedBaseHash = CurrentExpectedBaseHash;
@@ -386,14 +397,13 @@ namespace RevitDriveConnector.Addin.Services
 
                 string projectId = ExtractProjectName(centralPath);
                 string user = doc.Application.Username;
+                string localProjectDir = Path.Combine(AppConfig.Load().LocalCachePath, projectId);
 
                 if (LastSyncCancelled)
                 {
                     LastSyncCancelled = false;
-                    if (!string.IsNullOrEmpty(token))
-                    {
-                        ReleaseLockSync(projectId, token, user);
-                    }
+                    CentralSnapshotHelper.ClearPendingUpload(localProjectDir);
+                    if (!string.IsNullOrEmpty(token)) ReleaseLockSync(projectId, token, user);
                     return;
                 }
 
@@ -402,66 +412,251 @@ namespace RevitDriveConnector.Addin.Services
                     LastSyncCancelled = e.Status == RevitAPIEventStatus.Cancelled;
                     LastUploadFailed = e.Status == RevitAPIEventStatus.Failed;
                     LastUploadError = $"Sincronizzazione Revit non completata ({e.Status}).";
-                    if (!string.IsNullOrEmpty(token))
-                    {
-                        ReleaseLockSync(projectId, token, user);
-                    }
+                    CentralSnapshotHelper.ClearPendingUpload(localProjectDir);
+                    if (!string.IsNullOrEmpty(token)) ReleaseLockSync(projectId, token, user);
                     return;
                 }
 
+                // Upload with live chunked progress window and interactive retry loop if network fails!
+                bool uploaded = ExecuteUploadWithProgressAndRetry(
+                    projectId,
+                    centralPath,
+                    user,
+                    token,
+                    expectedBaseVersion,
+                    expectedBaseHash,
+                    localProjectDir);
+
+                if (uploaded)
+                {
+                    LiveElementLockService.OnDocumentSynchronized(doc);
+                }
+            }
+            finally
+            {
+                StopLockHeartbeat();
+                LiveElementLockService.IsSyncOrReloadActive = false;
+            }
+        }
+
+        /// <summary>
+        /// Uploads local Central changes using SyncProgressDialog (chunked resumable + progress bar).
+        /// If a transient failure occurs, offers immediate retry while keeping the local pending marker intact,
+        /// preventing the dreaded "Local file incompatible with central model" corruption.
+        /// </summary>
+        private static bool ExecuteUploadWithProgressAndRetry(
+            string projectId,
+            string centralPath,
+            string user,
+            string activeLockToken,
+            long? expectedBaseVersion,
+            string? expectedBaseHash,
+            string localProjectDir)
+        {
+            string currentToken = activeLockToken;
+
+            while (true)
+            {
                 try
                 {
+                    // If retrying after a previous attempt released the lock, acquire a fresh lock first
+                    if (string.IsNullOrEmpty(currentToken))
+                    {
+                        var cfg = AppConfig.Load();
+                        var lockTask = Task.Run(() => IpcClient.SendRequestAsync(new IpcRequest
+                        {
+                            Command = IpcCommand.AcquireSyncLock,
+                            PayloadJson = JsonSerializer.Serialize(new LockRequest
+                            {
+                                ProjectId = projectId,
+                                User = user,
+                                Machine = Environment.MachineName,
+                                TimeoutSeconds = Math.Max(120, cfg.SyncTimeoutSeconds)
+                            })
+                        }, timeoutMs: 30000));
+                        lockTask.Wait();
+                        var lockResp = lockTask.Result.Success && !string.IsNullOrEmpty(lockTask.Result.DataJson)
+                            ? JsonSerializer.Deserialize<LockResponse>(lockTask.Result.DataJson)
+                            : null;
+
+                        if (lockResp == null || lockResp.Status != SyncLockStatus.LockAcquired || string.IsNullOrEmpty(lockResp.LockToken))
+                        {
+                            LastUploadFailed = true;
+                            LastUploadError = lockResp?.Message ?? lockTask.Result.ErrorMessage ?? "Impossibile riacquisire il lock su Google Drive.";
+                            var askBusy = System.Windows.MessageBox.Show(
+                                $"Impossibile riprendere l'upload su Google Drive:\n{LastUploadError}\n\nVuoi riprovare adesso? (Scegli 'No' per mantenere il salvataggio locale in attesa di ripresa successiva).",
+                                "Ripresa Upload Drive",
+                                System.Windows.MessageBoxButton.YesNo,
+                                System.Windows.MessageBoxImage.Warning);
+                            if (askBusy == System.Windows.MessageBoxResult.Yes) continue;
+                            return false;
+                        }
+
+                        currentToken = lockResp.LockToken;
+                        StartLockHeartbeat(projectId, currentToken, user);
+                    }
+
                     var uploadPayload = JsonSerializer.Serialize(new
                     {
                         ProjectId = projectId,
                         CentralPath = centralPath,
-                        LockToken = token,
+                        LockToken = currentToken,
                         User = user,
                         ExpectedBaseVersion = expectedBaseVersion,
                         ExpectedBaseHash = expectedBaseHash
                     });
 
-                    var uploadTask = Task.Run(() => IpcClient.SendRequestAsync(new IpcRequest
-                    {
-                        Command = IpcCommand.UploadProjectChanges,
-                        PayloadJson = uploadPayload
-                    }, timeoutMs: 300000));
+                    var uploadDlg = new SyncProgressDialog(
+                        $"Google Drive Connector - Upload '{projectId}'",
+                        "Caricamento modifiche su Google Drive (chunked resumable)...",
+                        new IpcRequest
+                        {
+                            Command = IpcCommand.UploadProjectChanges,
+                            PayloadJson = uploadPayload
+                        },
+                        timeoutMs: 1800000); // 30 minutes max for 1 GB models on slow uplinks
 
-                    uploadTask.Wait();
-                    var uploadResp = uploadTask.Result;
-                    if (!uploadResp.Success)
+                    uploadDlg.ShowDialog();
+                    var uploadResp = uploadDlg.Response;
+
+                    // LocalServiceEngine releases the lock in its finally block after UploadProjectChanges
+                    currentToken = string.Empty;
+
+                    if (uploadResp != null && uploadResp.Success)
                     {
-                        LastUploadFailed = true;
-                        LastUploadError = uploadResp.ErrorMessage;
+                        LastUploadFailed = false;
+                        LastUploadError = null;
+                        CentralSnapshotHelper.ClearPendingUpload(localProjectDir);
+                        return true;
+                    }
+
+                    string err = uploadResp?.ErrorMessage ?? "Errore sconosciuto durante l'upload su Google Drive.";
+                    LastUploadFailed = true;
+                    LastUploadError = err;
+
+                    // Update marker with last error so next sync knows NOT to overwrite Central!
+                    CentralSnapshotHelper.MarkPendingUpload(localProjectDir, new PendingUploadMarker
+                    {
+                        ProjectId = projectId,
+                        CentralPath = centralPath,
+                        User = user,
+                        ExpectedBaseVersion = expectedBaseVersion,
+                        ExpectedBaseHash = expectedBaseHash,
+                        CreatedAtUtc = DateTime.UtcNow,
+                        LastError = err
+                    });
+
+                    bool isConflict = err.Contains("CONFLITTO RILEVATO", StringComparison.OrdinalIgnoreCase);
+                    if (isConflict)
+                    {
                         System.Windows.MessageBox.Show(
-                            $"La sincronizzazione locale in Revit è riuscita, ma il caricamento su Google Drive è stato bloccato/fallito:\n\n{uploadResp.ErrorMessage}",
-                            "Avviso Upload Drive",
+                            $"La sincronizzazione locale in Revit è avvenuta, ma il caricamento su Google Drive è stato bloccato per conflitto:\n\n{err}\n\n" +
+                            "Le tue modifiche sono conservate nel modello locale. Salva una copia di backup del file se necessario prima di riallinearti all'ultima versione del team.",
+                            "Conflitto Upload Google Drive",
                             System.Windows.MessageBoxButton.OK,
                             System.Windows.MessageBoxImage.Warning);
+                        return false;
                     }
-                    else
+
+                    var retryChoice = System.Windows.MessageBox.Show(
+                        $"La sincronizzazione locale in Revit è riuscita, ma il caricamento su Google Drive è stato interrotto:\n\n{err}\n\n" +
+                        "IMPORTANTE: Per evitare che il tuo modello locale diventi incompatibile con il centrale, premi 'Sì' per RIPROVARE SUBITO l'upload su Google Drive.",
+                        "Upload Drive Interrotto - Riprova",
+                        System.Windows.MessageBoxButton.YesNo,
+                        System.Windows.MessageBoxImage.Warning);
+
+                    if (retryChoice != System.Windows.MessageBoxResult.Yes)
                     {
-                        LiveElementLockService.OnDocumentSynchronized(doc);
+                        return false;
                     }
                 }
                 catch (Exception ex)
                 {
+                    AppLogger.Error("SynchronizationCoordinator", $"Eccezione durante upload '{projectId}'", ex);
                     LastUploadFailed = true;
                     LastUploadError = ex.Message;
-                    if (!string.IsNullOrEmpty(token))
+
+                    if (!string.IsNullOrEmpty(currentToken))
                     {
-                        ReleaseLockSync(projectId, token, user);
+                        ReleaseLockSync(projectId, currentToken, user);
+                        currentToken = string.Empty;
                     }
-                    System.Windows.MessageBox.Show(
-                        $"La sincronizzazione locale è riuscita, ma si è verificato un errore nel caricamento su Drive: {ex.Message}",
+
+                    var retryChoice = System.Windows.MessageBox.Show(
+                        $"Errore durante il caricamento su Google Drive:\n{ex.Message}\n\nVuoi riprovare subito l'upload per completare la sincronizzazione in sicurezza?",
                         "Avviso Upload Drive",
-                        System.Windows.MessageBoxButton.OK,
+                        System.Windows.MessageBoxButton.YesNo,
                         System.Windows.MessageBoxImage.Warning);
+
+                    if (retryChoice != System.Windows.MessageBoxResult.Yes)
+                    {
+                        return false;
+                    }
                 }
             }
-            finally
+        }
+
+        private static bool HandlePendingLocalUploadRecovery(
+            string projectId,
+            string centralPath,
+            string user,
+            bool? canRetryDirectlyHint,
+            string? detailMessage)
+        {
+            string localProjectDir = Path.Combine(AppConfig.Load().LocalCachePath, projectId);
+            var pending = CentralSnapshotHelper.ReadPendingUpload(localProjectDir);
+            if (pending == null) return true;
+
+            bool canRetry = canRetryDirectlyHint ?? true;
+            if (canRetry)
             {
-                LiveElementLockService.IsSyncOrReloadActive = false;
+                var choice = System.Windows.MessageBox.Show(
+                    $"È stata rilevata una sincronizzazione locale precedente di '{pending.User}' (basata su v{pending.ExpectedBaseVersion}) che non era stata caricata su Google Drive.\n\n" +
+                    "• Premi 'Sì' per COMPLETARE ORA l'upload pendente su Google Drive (consigliato: salva tutte le tue modifiche ed evita l'incompatibilità locale/centrale).\n" +
+                    "• Premi 'No' per annullare l'operazione senza toccare i file.",
+                    "Drive Connector - Upload Pendente Rilevato",
+                    System.Windows.MessageBoxButton.YesNo,
+                    System.Windows.MessageBoxImage.Question);
+
+                if (choice == System.Windows.MessageBoxResult.Yes)
+                {
+                    try
+                    {
+                        return ExecuteUploadWithProgressAndRetry(
+                            projectId,
+                            string.IsNullOrEmpty(pending.CentralPath) ? centralPath : pending.CentralPath,
+                            user,
+                            string.Empty,
+                            pending.ExpectedBaseVersion,
+                            pending.ExpectedBaseHash,
+                            localProjectDir);
+                    }
+                    finally
+                    {
+                        StopLockHeartbeat();
+                    }
+                }
+
+                return false;
+            }
+            else
+            {
+                var choice = System.Windows.MessageBox.Show(
+                    $"{detailMessage}\n\n" +
+                    "Per non perdere il tuo lavoro:\n" +
+                    "1) Usa 'Salva con nome' in Revit per salvare una copia di sicurezza delle tue modifiche.\n" +
+                    "2) Poi riapri il progetto da 'Apri da Google Drive' con 'Crea nuovo locale'.\n\n" +
+                    "Vuoi resettare lo stato di upload pendente locale ORA per poter scaricare la nuova versione da Google Drive? (Scegli 'No' se devi prima salvare una copia del tuo file).",
+                    "Drive Connector - Conflitto Upload Pendente",
+                    System.Windows.MessageBoxButton.YesNo,
+                    System.Windows.MessageBoxImage.Warning);
+
+                if (choice == System.Windows.MessageBoxResult.Yes)
+                {
+                    CentralSnapshotHelper.ClearPendingUpload(localProjectDir);
+                    return true;
+                }
+                return false;
             }
         }
 
@@ -485,9 +680,9 @@ namespace RevitDriveConnector.Addin.Services
         }
 
         /// <summary>
-        /// Esegue un'operazione sul modello centrale (es. Relinquish/Checkout) in sicurezza:
-        /// acquisisce il lock, allinea da Google Drive, ricarica il locale se necessario,
-        /// esegue l'azione Revit e carica le modifiche con verifica ottimistica.
+        /// Safely executes an operation on the central model (e.g., Relinquish/Checkout):
+        /// acquires cloud lock, keeps heartbeat alive through upload, aligns from Drive, reloads local,
+        /// executes Revit action, and uploads changes with optimistic concurrency verification.
         /// </summary>
         public static bool ExecuteLockedCentralOperation(
             Document doc,
@@ -519,24 +714,26 @@ namespace RevitDriveConnector.Addin.Services
 
             string projectId = ExtractProjectName(centralPath);
             string user = doc.Application.Username;
+            string localProjectDir = Path.Combine(AppConfig.Load().LocalCachePath, projectId);
             string? lockToken = null;
             bool lockHandledByUpload = false;
 
             try
             {
+                var cfg = AppConfig.Load();
                 var lockReq = new LockRequest
                 {
                     ProjectId = projectId,
                     User = user,
                     Machine = Environment.MachineName,
-                    TimeoutSeconds = 90
+                    TimeoutSeconds = Math.Max(120, cfg.SyncTimeoutSeconds)
                 };
 
                 var lockTask = Task.Run(() => IpcClient.SendRequestAsync(new IpcRequest
                 {
                     Command = IpcCommand.AcquireSyncLock,
                     PayloadJson = JsonSerializer.Serialize(lockReq)
-                }, timeoutMs: 25000));
+                }, timeoutMs: 30000));
                 lockTask.Wait();
                 var lockIpcResp = lockTask.Result;
 
@@ -558,55 +755,15 @@ namespace RevitDriveConnector.Addin.Services
                 lockToken = lockResp.LockToken;
                 StartLockHeartbeat(projectId, lockToken, user);
 
-                SyncIntegrityResult? alignedResult = null;
-                for (int attempt = 0; attempt < 15; attempt++)
+                var gatekeeper = new SyncGatekeeperDialog(projectId, user);
+                bool? gateOk = gatekeeper.ShowDialog();
+                if (gateOk != true || !gatekeeper.IsAlignedAndReady)
                 {
-                    var verifyTask = Task.Run(() => IpcClient.SendRequestAsync(new IpcRequest
-                    {
-                        Command = IpcCommand.VerifySyncIntegrity,
-                        PayloadJson = JsonSerializer.Serialize(new
-                        {
-                            ProjectId = projectId,
-                            User = user
-                        })
-                    }, timeoutMs: 180000));
-                    verifyTask.Wait();
-                    var verifyResp = verifyTask.Result;
-
-                    if (!verifyResp.Success || string.IsNullOrEmpty(verifyResp.DataJson))
-                    {
-                        errorMessage = verifyResp.ErrorMessage ?? "Errore durante l'allineamento da Google Drive.";
-                        return false;
-                    }
-
-                    alignedResult = JsonSerializer.Deserialize<SyncIntegrityResult>(verifyResp.DataJson);
-                    if (alignedResult == null)
-                    {
-                        errorMessage = "Risposta di allineamento non valida.";
-                        return false;
-                    }
-
-                    if (alignedResult.IsAligned)
-                    {
-                        break;
-                    }
-
-                    if (!alignedResult.IsWaitingForDownload)
-                    {
-                        errorMessage = alignedResult.Message;
-                        return false;
-                    }
-
-                    Thread.Sleep(1500);
-                }
-
-                if (alignedResult == null || !alignedResult.IsAligned)
-                {
-                    errorMessage = alignedResult?.Message ?? "Timeout durante l'allineamento da Google Drive.";
+                    errorMessage = gatekeeper.ErrorMessage ?? "Allineamento da Google Drive annullato o fallito.";
                     return false;
                 }
 
-                if (alignedResult.WasUpdatedFromCloud || reloadIfCloudUpdated)
+                if (gatekeeper.WasUpdatedFromCloud || reloadIfCloudUpdated)
                 {
                     try
                     {
@@ -626,35 +783,38 @@ namespace RevitDriveConnector.Addin.Services
                     }
                 }
 
+                CentralSnapshotHelper.CreatePreSyncSnapshot(localProjectDir);
+                CentralSnapshotHelper.MarkPendingUpload(localProjectDir, new PendingUploadMarker
+                {
+                    ProjectId = projectId,
+                    CentralPath = centralPath,
+                    User = user,
+                    ExpectedBaseVersion = gatekeeper.CloudVersion,
+                    ExpectedBaseHash = gatekeeper.ExpectedHash,
+                    CreatedAtUtc = DateTime.UtcNow
+                });
+
                 bool shouldUpload = revitAction();
                 if (!shouldUpload)
                 {
+                    CentralSnapshotHelper.ClearPendingUpload(localProjectDir);
                     LiveElementLockService.OnDocumentSynchronized(doc);
                     return true;
                 }
 
-                var uploadPayload = JsonSerializer.Serialize(new
-                {
-                    ProjectId = projectId,
-                    CentralPath = centralPath,
-                    LockToken = lockToken,
-                    User = user,
-                    ExpectedBaseVersion = alignedResult.CloudVersion,
-                    ExpectedBaseHash = alignedResult.ExpectedHash
-                });
-
-                var uploadTask = Task.Run(() => IpcClient.SendRequestAsync(new IpcRequest
-                {
-                    Command = IpcCommand.UploadProjectChanges,
-                    PayloadJson = uploadPayload
-                }, timeoutMs: 300000));
-                uploadTask.Wait();
-                var uploadResp = uploadTask.Result;
                 lockHandledByUpload = true;
+                bool ok = ExecuteUploadWithProgressAndRetry(
+                    projectId,
+                    centralPath,
+                    user,
+                    lockToken,
+                    gatekeeper.CloudVersion,
+                    gatekeeper.ExpectedHash,
+                    localProjectDir);
 
-                if (!uploadResp.Success)
+                if (!ok)
                 {
-                    errorMessage = uploadResp.ErrorMessage ?? "Errore durante il caricamento su Google Drive.";
+                    errorMessage = LastUploadError ?? "Errore durante il caricamento su Google Drive.";
                     return false;
                 }
 

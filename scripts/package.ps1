@@ -11,7 +11,7 @@ Write-Host "--- 1. Arresto processi RevitDriveConnector di sfondo ---" -Foregrou
 Get-Process -Name "*RevitDriveConnector*" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -like "*Setup*" -and $_.Path -like "*RevitDriveConnector*" } | Stop-Process -Force -ErrorAction SilentlyContinue
 
-Write-Host "--- 2. Compilazione Progetti di Base (Core, Daemon, Server, Addin .NET 8/10) ---" -ForegroundColor Cyan
+Write-Host "--- 2. Compilazione Progetti di Base (Core, Addin .NET 8/10 - Serverless) ---" -ForegroundColor Cyan
 $binDir = Join-Path $root "dist\payload\bin"
 if (Test-Path $binDir) { Remove-Item $binDir -Force -Recurse }
 New-Item -ItemType Directory -Path $binDir -Force | Out-Null
@@ -24,8 +24,6 @@ New-Item -ItemType Directory -Path $binNet10Dir -Force | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Errore durante la compilazione di RevitDriveConnector.slnx!" }
 
 Copy-Item "$root\src\RevitDriveConnector.Core\bin\Release\net8.0\*" $binDir -Force -Recurse
-Copy-Item "$root\src\RevitDriveConnector.Daemon\bin\Release\net8.0\*" $binDir -Force -Recurse
-Copy-Item "$root\src\RevitDriveConnector.Server\bin\Release\net8.0\*" $binDir -Force -Recurse
 Copy-Item "$root\src\RevitDriveConnector.Addin\bin\Release\net10.0-windows\*" $binDir -Force -Recurse
 Copy-Item "$root\src\RevitDriveConnector.Addin\bin\Release\net10.0-windows\*" $binNet10Dir -Force -Recurse
 Copy-Item "$root\src\RevitDriveConnector.Addin\bin\Release\net8.0-windows\*" $binNet8Dir -Force -Recurse

@@ -218,6 +218,24 @@ namespace RevitDriveConnector.Addin.UI
 
             try
             {
+                void ReportProgress(TransferProgressInfo info)
+                {
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        if (info.TotalBytes > 0)
+                        {
+                            double mbDone = info.BytesTransferred / (1024.0 * 1024.0);
+                            double mbTotal = info.TotalBytes / (1024.0 * 1024.0);
+                            double speed = info.BytesPerSecond / (1024.0 * 1024.0);
+                            TxtStatus.Text = $"{info.Phase}: {info.Percentage:F0}% ({mbDone:F1}/{mbTotal:F1} MB • {speed:F1} MB/s) — {info.CurrentFileName}";
+                        }
+                        else if (!string.IsNullOrWhiteSpace(info.CurrentFileName))
+                        {
+                            TxtStatus.Text = $"{info.Phase} — {info.CurrentFileName}";
+                        }
+                    }));
+                }
+
                 IpcResponse resp;
                 if (!SelectedProject.IsMountedLocally)
                 {
@@ -228,11 +246,11 @@ namespace RevitDriveConnector.Addin.UI
                         CloudFolderId = SelectedProject.CloudFolderId
                     };
 
-                    resp = await _ipcClient.SendRequestAsync(new IpcRequest
+                    resp = await Task.Run(() => _ipcClient.SendRequestAsync(new IpcRequest
                     {
                         Command = IpcCommand.MountCloudProject,
                         PayloadJson = JsonSerializer.Serialize(mountReq)
-                    }, timeoutMs: 180000);
+                    }, timeoutMs: 1800000, progressCallback: ReportProgress));
                 }
                 else
                 {
@@ -244,11 +262,11 @@ namespace RevitDriveConnector.Addin.UI
                         User = _uiapp.Application.Username
                     };
 
-                    resp = await _ipcClient.SendRequestAsync(new IpcRequest
+                    resp = await Task.Run(() => _ipcClient.SendRequestAsync(new IpcRequest
                     {
                         Command = IpcCommand.DownloadAndPrepareProject,
                         PayloadJson = JsonSerializer.Serialize(prepReq)
-                    }, timeoutMs: 300000);
+                    }, timeoutMs: 1800000, progressCallback: ReportProgress));
                 }
 
                 if (!resp.Success || string.IsNullOrEmpty(resp.DataJson))
