@@ -127,6 +127,21 @@ namespace RevitDriveConnector.Core.Localization
  ["it"] = "Consolida i collegamenti esterni (Revit, DWG, IFC) nella cartella Links di Google Drive e imposta percorsi relativi.",
  ["en"] = "Consolidates external links (Revit, DWG, IFC) into the Google Drive Links folder with relative paths."
  },
+ ["Btn_CheckLinks"] = new() { ["it"] = "Verifica\nLink Drive", ["en"] = "Check\nDrive Links" },
+ ["Btn_CheckLinks_Tip"] = new() {
+ ["it"] = "Verifica se i collegamenti esterni (.rvt, .dwg, .ifc) hanno nuove versioni su Google Drive e li ricarica.",
+ ["en"] = "Checks if external links have newer cloud versions on Google Drive and reloads them."
+ },
+ ["Btn_LiveEdits"] = new() { ["it"] = "Modifiche\nLive", ["en"] = "Live\nEdits" },
+ ["Btn_LiveEdits_Tip"] = new() {
+ ["it"] = "Visualizza in tabella tutti gli elementi attualmente in modifica dai colleghi, evidenziali a colori o isolali in vista.",
+ ["en"] = "Displays elements currently locked by teammates in real time, with color highlighting and temporary view isolation."
+ },
+ ["Btn_History"] = new() { ["it"] = "Cronologia\n& Rollback", ["en"] = "Version\nHistory" },
+ ["Btn_History_Tip"] = new() {
+ ["it"] = "Visualizza le revisioni del modello centrale su Google Drive e ripristina versioni precedenti in caso di corruzione.",
+ ["en"] = "View cloud central revisions on Google Drive and restore past versions in case of corruption."
+ },
  ["Btn_Account"] = new() { ["it"] = "Account\nGoogle", ["en"] = "Google\nAccount" },
  ["Btn_Account_Tip"] = new() {
  ["it"] = "Accedi al tuo account Google per visualizzare e sincronizzare automaticamente i progetti condivisi dai tuoi colleghi.",

@@ -33,6 +33,7 @@ namespace RevitDriveConnector.Core.Services.Drive
         private readonly DriveApiClient _api;
         private readonly GoogleAuthService _auth;
         private readonly DriveFolderResolver _folders;
+        private readonly CloudLockService _locks;
         private readonly CollaborationStateService _collab;
         private readonly Func<AppConfig> _configProvider;
 
@@ -40,12 +41,14 @@ namespace RevitDriveConnector.Core.Services.Drive
             DriveApiClient api,
             GoogleAuthService auth,
             DriveFolderResolver folders,
+            CloudLockService locks,
             CollaborationStateService collab,
             Func<AppConfig> configProvider)
         {
             _api = api;
             _auth = auth;
             _folders = folders;
+            _locks = locks;
             _collab = collab;
             _configProvider = configProvider;
         }
@@ -1764,6 +1767,327 @@ namespace RevitDriveConnector.Core.Services.Drive
             }
 
             return null;
+        }
+
+        public async Task<ProjectHistoryResponse> GetProjectHistoryAsync(string projectName, CancellationToken ct = default)
+        {
+            await _auth.EnsureConnectedAsync(allowInteractiveLogin: false, ct);
+            string? projectFolderId = await _folders.GetProjectFolderIdAsync(projectName, createIfMissing: false, ct);
+            if (string.IsNullOrEmpty(projectFolderId))
+            {
+                throw new DirectoryNotFoundException($"Cartella del progetto '{projectName}' non trovata su Google Drive.");
+            }
+
+            var (manifest, _) = await TryGetCloudManifestFromFolderAsync(projectFolderId, ct);
+            long currentVersion = manifest?.Version ?? 1;
+
+            string? centralFolderId = await _folders.GetSubfolderIdAsync(projectFolderId, "Central", createIfMissing: false, ct);
+            if (string.IsNullOrEmpty(centralFolderId))
+            {
+                return new ProjectHistoryResponse { ProjectId = projectName, CurrentVersion = currentVersion };
+            }
+
+            var rvtFiles = await _api.ListFilesAsync(
+                $"'{centralFolderId}' in parents and name contains '.rvt' and mimeType != 'application/vnd.google-apps.folder' and trashed = false",
+                "id,name,size,modifiedTime",
+                50,
+                ct);
+
+            var mainRvt = rvtFiles.FirstOrDefault(f => f.Name.EndsWith("_Central.rvt", StringComparison.OrdinalIgnoreCase))
+                          ?? rvtFiles.FirstOrDefault();
+
+            var result = new ProjectHistoryResponse
+            {
+                ProjectId = projectName,
+                CurrentVersion = currentVersion,
+                Revisions = new List<ProjectRevisionInfo>()
+            };
+
+            if (mainRvt != null)
+            {
+                var revisions = await _api.ListRevisionsAsync(mainRvt.Id, ct);
+                long revIdx = 1;
+                foreach (var r in revisions.OrderBy(x => x.ModifiedTime ?? DateTimeOffset.MinValue))
+                {
+                    result.Revisions.Add(new ProjectRevisionInfo
+                    {
+                        RevisionId = r.Id,
+                        ModifiedTimeUtc = (r.ModifiedTime ?? DateTimeOffset.UtcNow).UtcDateTime,
+                        SizeBytes = r.Size ?? 0,
+                        AuthorName = r.LastModifyingUser?.DisplayName ?? "Collaboratore",
+                        AuthorEmail = r.LastModifyingUser?.EmailAddress ?? "",
+                        Version = revIdx++,
+                        Description = $"Revisione Google Drive ({r.ModifiedTime?.ToLocalTime():yyyy-MM-dd HH:mm})"
+                    });
+                }
+            }
+
+            return result;
+        }
+
+        public async Task<RollbackResponse> RollbackProjectAsync(
+            string projectName,
+            string revisionId,
+            string user,
+            string machine,
+            string reason,
+            CancellationToken ct = default,
+            Action<TransferProgressInfo>? progressCallback = null)
+        {
+            await _auth.EnsureConnectedAsync(allowInteractiveLogin: false, ct);
+            string? projectFolderId = await _folders.GetProjectFolderIdAsync(projectName, createIfMissing: false, ct);
+            if (string.IsNullOrEmpty(projectFolderId))
+            {
+                throw new DirectoryNotFoundException($"Cartella del progetto '{projectName}' non trovata su Google Drive.");
+            }
+
+            // 1. Acquire exclusive lock for rollback
+            var lockResp = await _locks.AcquireProjectLockAsync(new LockRequest
+            {
+                ProjectId = projectName,
+                User = user,
+                Machine = machine,
+                TimeoutSeconds = 300
+            }, ct);
+
+            if (lockResp == null || lockResp.Status != SyncLockStatus.LockAcquired || string.IsNullOrEmpty(lockResp.LockToken))
+            {
+                throw new InvalidOperationException($"Impossibile acquisire il lock per il rollback: {lockResp?.Message ?? "progetto occupato"}.");
+            }
+
+            try
+            {
+                string? centralFolderId = await _folders.GetSubfolderIdAsync(projectFolderId, "Central", createIfMissing: false, ct);
+                if (string.IsNullOrEmpty(centralFolderId))
+                {
+                    throw new DirectoryNotFoundException("Cartella Central non trovata nel progetto su Google Drive.");
+                }
+
+                var rvtFiles = await _api.ListFilesAsync(
+                    $"'{centralFolderId}' in parents and name contains '.rvt' and mimeType != 'application/vnd.google-apps.folder' and trashed = false",
+                    "id,name,size,modifiedTime",
+                    50,
+                    ct);
+
+                var mainRvt = rvtFiles.FirstOrDefault(f => f.Name.EndsWith("_Central.rvt", StringComparison.OrdinalIgnoreCase))
+                              ?? rvtFiles.FirstOrDefault();
+
+                if (mainRvt == null)
+                {
+                    throw new FileNotFoundException("Modello centrale .rvt non trovato nella cartella Central su Google Drive.");
+                }
+
+                // 2. Download historical revision to a temp file
+                string tempDir = Path.Combine(AppConfig.Load().LocalCachePath, projectName, ".snapshots", "rollback_staging");
+                Directory.CreateDirectory(tempDir);
+                string tempRvt = Path.Combine(tempDir, mainRvt.Name);
+
+                var progress = new TransferProgressTracker("Scaricamento revisione storica", progressCallback);
+                progress.SetTotals(1, mainRvt.Size ?? 100 * 1024 * 1024);
+                progress.SetCurrentFile(mainRvt.Name);
+
+                using (var fs = new FileStream(tempRvt, FileMode.Create, FileAccess.Write, FileShare.None))
+                {
+                    await _api.DownloadRevisionAsync(mainRvt.Id, revisionId, fs, ct, progress.AddBytes);
+                }
+                progress.MarkFileCompleted();
+
+                // 3. Update central .rvt content with the historical content
+                var uploadProgress = new TransferProgressTracker("Ripristino revisione su Google Drive", progressCallback);
+                uploadProgress.SetTotals(1, new FileInfo(tempRvt).Length);
+                uploadProgress.SetCurrentFile(mainRvt.Name);
+
+                using (var uploadStream = new FileStream(tempRvt, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    await _api.UpdateFileContentAsync(mainRvt.Id, uploadStream, ct, uploadProgress.AddBytes);
+                }
+                uploadProgress.MarkFileCompleted();
+
+                // 4. Update manifest.json incrementing version
+                var (currentManifest, _) = await TryGetCloudManifestFromFolderAsync(projectFolderId, ct);
+                long oldVer = currentManifest?.Version ?? 1;
+                long newVer = oldVer + 1;
+
+                var updatedManifest = currentManifest ?? new ProjectManifest
+                {
+                    ProjectId = projectName,
+                    ProjectName = projectName,
+                    CentralRvtName = mainRvt.Name
+                };
+                updatedManifest.Version = newVer;
+                updatedManifest.CentralRvtName = mainRvt.Name;
+                updatedManifest.LastSyncUtc = DateTime.UtcNow;
+                updatedManifest.LastSyncUser = $"{user} (Rollback rev {revisionId})";
+
+                var mFiles = await _api.ListFilesAsync(
+                    $"'{projectFolderId}' in parents and name = 'manifest.json' and trashed = false",
+                    "id,name",
+                    5,
+                    ct);
+                var mfItem = mFiles.FirstOrDefault();
+
+                byte[] mfBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(updatedManifest, new JsonSerializerOptions { WriteIndented = true }));
+                using (var mfMs = new MemoryStream(mfBytes))
+                {
+                    if (mfItem != null)
+                    {
+                        await _api.UpdateFileContentAsync(mfItem.Id, mfMs, ct);
+                    }
+                    else
+                    {
+                        await _api.CreateAndUploadFileAsync("manifest.json", projectFolderId, mfMs, ct);
+                    }
+                }
+
+                // Also update local Central cache and manifest
+                string localProjectDir = Path.Combine(AppConfig.Load().LocalCachePath, projectName);
+                string localCentralRvt = Path.Combine(localProjectDir, "Central", mainRvt.Name);
+                if (File.Exists(localCentralRvt))
+                {
+                    File.Copy(tempRvt, localCentralRvt, true);
+                }
+                string localMf = Path.Combine(localProjectDir, "manifest.json");
+                await File.WriteAllBytesAsync(localMf, mfBytes, ct);
+
+                try { File.Delete(tempRvt); } catch { }
+
+                AppLogger.Info("CloudProjectSyncService", $"Rollback completato su '{projectName}': ripristinata revisione {revisionId} come nuova versione {newVer}.");
+
+                return new RollbackResponse
+                {
+                    Success = true,
+                    RestoredVersion = oldVer,
+                    NewVersion = newVer,
+                    Message = $"Rollback completato con successo: ripristinata la revisione storica e creata la nuova versione v{newVer} su Google Drive."
+                };
+            }
+            finally
+            {
+                await _locks.ReleaseProjectLockAsync(projectName, lockResp.LockToken, user, ct);
+            }
+        }
+
+        public async Task<CheckCloudLinksResponse> CheckCloudLinksAsync(string projectName, string localProjectDir, CancellationToken ct = default)
+        {
+            await _auth.EnsureConnectedAsync(allowInteractiveLogin: false, ct);
+            string? projectFolderId = await _folders.GetProjectFolderIdAsync(projectName, createIfMissing: false, ct);
+            if (string.IsNullOrEmpty(projectFolderId))
+            {
+                return new CheckCloudLinksResponse { ProjectId = projectName, UpdatesAvailable = false };
+            }
+
+            string? linksFolderId = await _folders.GetSubfolderIdAsync(projectFolderId, "Links", createIfMissing: false, ct);
+            if (string.IsNullOrEmpty(linksFolderId))
+            {
+                return new CheckCloudLinksResponse { ProjectId = projectName, UpdatesAvailable = false };
+            }
+
+            var cloudFiles = await _api.ListFilesAsync(
+                $"'{linksFolderId}' in parents and mimeType != 'application/vnd.google-apps.folder' and trashed = false",
+                "id,name,size,modifiedTime,md5Checksum",
+                100,
+                ct);
+
+            string localLinksDir = Path.Combine(localProjectDir, "Links");
+            var items = new List<CloudLinkUpdateItem>();
+            bool anyUpdates = false;
+
+            foreach (var cf in cloudFiles)
+            {
+                string localPath = Path.Combine(localLinksDir, cf.Name);
+                bool existsLocally = File.Exists(localPath);
+                long localSize = existsLocally ? new FileInfo(localPath).Length : 0;
+                DateTime localModUtc = existsLocally ? File.GetLastWriteTimeUtc(localPath) : DateTime.MinValue;
+                DateTime cloudModUtc = (cf.ModifiedTime ?? DateTimeOffset.UtcNow).UtcDateTime;
+
+                bool isNewer = false;
+                if (!existsLocally)
+                {
+                    isNewer = true;
+                }
+                else if (cf.Size.HasValue && cf.Size.Value != localSize)
+                {
+                    isNewer = true;
+                }
+                else if (cloudModUtc > localModUtc.AddSeconds(5))
+                {
+                    isNewer = true;
+                }
+
+                if (isNewer) anyUpdates = true;
+
+                items.Add(new CloudLinkUpdateItem
+                {
+                    FileName = cf.Name,
+                    CloudFileId = cf.Id,
+                    CloudSizeBytes = cf.Size ?? 0,
+                    CloudModifiedTimeUtc = cloudModUtc,
+                    LocalExists = existsLocally,
+                    LocalSizeBytes = localSize,
+                    LocalModifiedTimeUtc = localModUtc,
+                    HasNewCloudVersion = isNewer
+                });
+            }
+
+            return new CheckCloudLinksResponse
+            {
+                ProjectId = projectName,
+                UpdatesAvailable = anyUpdates,
+                Links = items
+            };
+        }
+
+        public async Task<bool> DownloadCloudLinkAsync(
+            string projectName,
+            string fileName,
+            string localProjectDir,
+            CancellationToken ct = default,
+            Action<TransferProgressInfo>? progressCallback = null)
+        {
+            await _auth.EnsureConnectedAsync(allowInteractiveLogin: false, ct);
+            string? projectFolderId = await _folders.GetProjectFolderIdAsync(projectName, createIfMissing: false, ct);
+            if (string.IsNullOrEmpty(projectFolderId)) return false;
+
+            string? linksFolderId = await _folders.GetSubfolderIdAsync(projectFolderId, "Links", createIfMissing: false, ct);
+            if (string.IsNullOrEmpty(linksFolderId)) return false;
+
+            var files = await _api.ListFilesAsync(
+                $"'{linksFolderId}' in parents and name = '{fileName.Replace("'", "\\'")}' and trashed = false",
+                "id,name,size,modifiedTime",
+                5,
+                ct);
+
+            var linkFile = files.FirstOrDefault();
+            if (linkFile == null) return false;
+
+            string localLinksDir = Path.Combine(localProjectDir, "Links");
+            Directory.CreateDirectory(localLinksDir);
+            string targetPath = Path.Combine(localLinksDir, fileName);
+
+            var progress = new TransferProgressTracker($"Scaricamento collegamento {fileName}", progressCallback);
+            progress.SetTotals(1, linkFile.Size ?? 50 * 1024 * 1024);
+            progress.SetCurrentFile(fileName);
+
+            string tempFile = targetPath + ".download.tmp";
+            using (var fs = new FileStream(tempFile, FileMode.Create, FileAccess.Write, FileShare.None))
+            {
+                await _api.DownloadFileAsync(linkFile.Id, fs, ct, progress.AddBytes);
+            }
+            progress.MarkFileCompleted();
+
+            if (File.Exists(targetPath))
+            {
+                File.Delete(targetPath);
+            }
+            File.Move(tempFile, targetPath);
+
+            if (linkFile.ModifiedTime.HasValue)
+            {
+                File.SetLastWriteTimeUtc(targetPath, linkFile.ModifiedTime.Value.UtcDateTime);
+            }
+
+            AppLogger.Info("CloudProjectSyncService", $"Collegamento '{fileName}' scaricato con successo in '{targetPath}'.");
+            return true;
         }
     }
 }

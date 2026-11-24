@@ -585,5 +585,51 @@ namespace RevitDriveConnector.Core.Services.Drive
             resp.EnsureSuccessStatusCode();
             return await resp.Content.ReadAsStringAsync(ct);
         }
+
+        public async Task<List<DriveRevisionItem>> ListRevisionsAsync(string fileId, CancellationToken ct = default)
+        {
+            string url = $"https://www.googleapis.com/drive/v3/files/{Uri.EscapeDataString(fileId)}/revisions?fields=revisions(id,mimeType,modifiedTime,size,md5Checksum,keepForever,lastModifyingUser)&supportsAllDrives=true";
+            using var resp = await SendAuthorizedWithRetryAsync(
+                token => _auth.CreateAuthorizedRequestAsync(HttpMethod.Get, url, token),
+                HttpCompletionOption.ResponseContentRead,
+                ct);
+
+            resp.EnsureSuccessStatusCode();
+            string json = await resp.Content.ReadAsStringAsync(ct);
+            var parsed = JsonSerializer.Deserialize<DriveRevisionListResponse>(json);
+            return parsed?.Revisions ?? new List<DriveRevisionItem>();
+        }
+
+        public async Task DownloadRevisionAsync(
+            string fileId,
+            string revisionId,
+            Stream destination,
+            CancellationToken ct = default,
+            Action<long>? onBytesDelta = null)
+        {
+            string url = $"https://www.googleapis.com/drive/v3/files/{Uri.EscapeDataString(fileId)}/revisions/{Uri.EscapeDataString(revisionId)}?alt=media&supportsAllDrives=true";
+
+            if (destination.CanSeek)
+            {
+                destination.SetLength(0);
+                destination.Position = 0;
+            }
+
+            using var resp = await SendAuthorizedWithRetryAsync(
+                token => _auth.CreateAuthorizedRequestAsync(HttpMethod.Get, url, token),
+                HttpCompletionOption.ResponseHeadersRead,
+                ct);
+
+            resp.EnsureSuccessStatusCode();
+
+            using var contentStream = await resp.Content.ReadAsStreamAsync(ct);
+            byte[] buffer = new byte[256 * 1024];
+            int bytesRead;
+            while ((bytesRead = await contentStream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct)) > 0)
+            {
+                await destination.WriteAsync(buffer.AsMemory(0, bytesRead), ct);
+                onBytesDelta?.Invoke(bytesRead);
+            }
+        }
     }
 }

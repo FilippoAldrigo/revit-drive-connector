@@ -262,6 +262,22 @@ namespace RevitDriveConnector.Addin.Services
             return StatesByProject.TryGetValue(projectId, out var state) && !state.RemoteLocks.IsEmpty;
         }
 
+        public static (Dictionary<string, RemoteElementLockInfo> remoteLocks, HashSet<string> localDirty) GetProjectLockSnapshots(string projectId)
+        {
+            if (StatesByProject.TryGetValue(projectId, out var state))
+            {
+                Dictionary<string, RemoteElementLockInfo> rem;
+                HashSet<string> loc;
+                lock (state.SyncRoot)
+                {
+                    rem = new Dictionary<string, RemoteElementLockInfo>(state.RemoteLocks, StringComparer.OrdinalIgnoreCase);
+                    loc = new HashSet<string>(state.LocalDirty, StringComparer.OrdinalIgnoreCase);
+                }
+                return (rem, loc);
+            }
+            return (new Dictionary<string, RemoteElementLockInfo>(), new HashSet<string>());
+        }
+
         public static void OnSelectionChanged(SelectionChangedEventArgs e)
         {
             if (!_isLiveLockEnabled || _isSyncOrReloadActive) return;

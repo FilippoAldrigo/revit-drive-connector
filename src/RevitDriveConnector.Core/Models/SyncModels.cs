@@ -363,4 +363,175 @@ namespace RevitDriveConnector.Core.Models
         [JsonPropertyName("activeSyncLock")]
         public FileLockData? ActiveSyncLock { get; set; }
     }
+
+    public class PreflightCheckRequest
+    {
+        [JsonPropertyName("projectId")]
+        public string ProjectId { get; set; } = string.Empty;
+
+        [JsonPropertyName("minRequiredFreeBytes")]
+        public long MinRequiredFreeBytes { get; set; } = 2L * 1024 * 1024 * 1024; // 2 GB default
+    }
+
+    public class PreflightCheckResult
+    {
+        [JsonPropertyName("success")]
+        public bool Success { get; set; }
+
+        [JsonPropertyName("isAuthValid")]
+        public bool IsAuthValid { get; set; }
+
+        [JsonPropertyName("authEmail")]
+        public string AuthEmail { get; set; } = string.Empty;
+
+        [JsonPropertyName("isDiskSpaceSufficient")]
+        public bool IsDiskSpaceSufficient { get; set; }
+
+        [JsonPropertyName("availableFreeBytes")]
+        public long AvailableFreeBytes { get; set; }
+
+        [JsonPropertyName("requiredFreeBytes")]
+        public long RequiredFreeBytes { get; set; }
+
+        [JsonPropertyName("driveLetter")]
+        public string DriveLetter { get; set; } = string.Empty;
+
+        [JsonPropertyName("errorMessage")]
+        public string? ErrorMessage { get; set; }
+    }
+
+    public class ProjectRevisionInfo
+    {
+        [JsonPropertyName("revisionId")]
+        public string RevisionId { get; set; } = string.Empty;
+
+        [JsonPropertyName("modifiedTimeUtc")]
+        public DateTime ModifiedTimeUtc { get; set; }
+
+        [JsonPropertyName("sizeBytes")]
+        public long SizeBytes { get; set; }
+
+        [JsonPropertyName("authorName")]
+        public string AuthorName { get; set; } = string.Empty;
+
+        [JsonPropertyName("authorEmail")]
+        public string AuthorEmail { get; set; } = string.Empty;
+
+        [JsonPropertyName("version")]
+        public long Version { get; set; }
+
+        [JsonPropertyName("description")]
+        public string Description { get; set; } = string.Empty;
+    }
+
+    public class ProjectHistoryResponse
+    {
+        [JsonPropertyName("projectId")]
+        public string ProjectId { get; set; } = string.Empty;
+
+        [JsonPropertyName("currentVersion")]
+        public long CurrentVersion { get; set; }
+
+        [JsonPropertyName("revisions")]
+        public List<ProjectRevisionInfo> Revisions { get; set; } = new();
+    }
+
+    public class RollbackRequest
+    {
+        [JsonPropertyName("projectId")]
+        public string ProjectId { get; set; } = string.Empty;
+
+        [JsonPropertyName("revisionId")]
+        public string RevisionId { get; set; } = string.Empty;
+
+        [JsonPropertyName("user")]
+        public string User { get; set; } = string.Empty;
+
+        [JsonPropertyName("machine")]
+        public string Machine { get; set; } = string.Empty;
+
+        [JsonPropertyName("reason")]
+        public string Reason { get; set; } = string.Empty;
+    }
+
+    public class RollbackResponse
+    {
+        [JsonPropertyName("success")]
+        public bool Success { get; set; }
+
+        [JsonPropertyName("restoredVersion")]
+        public long RestoredVersion { get; set; }
+
+        [JsonPropertyName("newVersion")]
+        public long NewVersion { get; set; }
+
+        [JsonPropertyName("message")]
+        public string Message { get; set; } = string.Empty;
+    }
+
+    public class CloudLinkUpdateItem
+    {
+        [JsonPropertyName("fileName")]
+        public string FileName { get; set; } = string.Empty;
+
+        [JsonPropertyName("cloudFileId")]
+        public string CloudFileId { get; set; } = string.Empty;
+
+        [JsonPropertyName("cloudSizeBytes")]
+        public long CloudSizeBytes { get; set; }
+
+        [JsonPropertyName("cloudModifiedTimeUtc")]
+        public DateTime CloudModifiedTimeUtc { get; set; }
+
+        [JsonPropertyName("localExists")]
+        public bool LocalExists { get; set; }
+
+        [JsonPropertyName("localSizeBytes")]
+        public long LocalSizeBytes { get; set; }
+
+        [JsonPropertyName("localModifiedTimeUtc")]
+        public DateTime LocalModifiedTimeUtc { get; set; }
+
+        [JsonPropertyName("hasNewCloudVersion")]
+        public bool HasNewCloudVersion { get; set; }
+    }
+
+    public class CheckCloudLinksResponse
+    {
+        [JsonPropertyName("projectId")]
+        public string ProjectId { get; set; } = string.Empty;
+
+        [JsonPropertyName("updatesAvailable")]
+        public bool UpdatesAvailable { get; set; }
+
+        [JsonPropertyName("links")]
+        public List<CloudLinkUpdateItem> Links { get; set; } = new();
+    }
+
+    public class DiskCleanupResult
+    {
+        [JsonPropertyName("freedBytes")]
+        public long FreedBytes { get; set; }
+
+        [JsonPropertyName("deletedFilesCount")]
+        public int DeletedFilesCount { get; set; }
+
+        [JsonPropertyName("deletedDirectoriesCount")]
+        public int DeletedDirectoriesCount { get; set; }
+
+        [JsonPropertyName("message")]
+        public string Message { get; set; } = string.Empty;
+    }
+
+    public class DiagnosticsExportResponse
+    {
+        [JsonPropertyName("zipPath")]
+        public string ZipPath { get; set; } = string.Empty;
+
+        [JsonPropertyName("zipSizeBytes")]
+        public long ZipSizeBytes { get; set; }
+
+        [JsonPropertyName("fileCount")]
+        public int FileCount { get; set; }
+    }
 }

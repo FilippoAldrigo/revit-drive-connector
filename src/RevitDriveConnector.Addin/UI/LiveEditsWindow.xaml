@@ -1,0 +1,68 @@
+<Window x:Class="RevitDriveConnector.Addin.UI.LiveEditsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Google Drive Connector - Chi sta modificando cosa" Height="500" Width="760"
+        WindowStartupLocation="CenterScreen"
+        FontFamily="Segoe UI" FontSize="13"
+        Background="#0F172A" Foreground="White">
+
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0" Margin="0,0,0,16">
+            <TextBlock Text="Chi sta modificando cosa (Lock Live Modello)" FontSize="18" FontWeight="Bold" Foreground="#F8FAFC"/>
+            <TextBlock x:Name="TxtSubtitle" Text="Elenco degli elementi BIM attualmente in modifica prima della sincronizzazione con Central." FontSize="12" Foreground="#94A3B8" Margin="0,4,0,0"/>
+        </StackPanel>
+
+        <!-- Elements Table -->
+        <Border Grid.Row="1" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="6">
+            <ListView x:Name="LstLocks" Background="Transparent" BorderThickness="0" Foreground="White"
+                      SelectionMode="Single" SelectionChanged="LstLocks_SelectionChanged">
+                <ListView.View>
+                    <GridView>
+                        <GridViewColumn Header="Stato / Utente" Width="180">
+                            <GridViewColumn.CellTemplate>
+                                <DataTemplate>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Ellipse Width="10" Height="10" Fill="{Binding ColorHex}" Margin="0,0,8,0" VerticalAlignment="Center"/>
+                                        <TextBlock Text="{Binding StatusBadge}" FontWeight="SemiBold" Foreground="White"/>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </GridViewColumn.CellTemplate>
+                        </GridViewColumn>
+                        <GridViewColumn Header="Computer" Width="110" DisplayMemberBinding="{Binding OwnerMachine}"/>
+                        <GridViewColumn Header="ID" Width="80" DisplayMemberBinding="{Binding Id.Value}"/>
+                        <GridViewColumn Header="Categoria" Width="140" DisplayMemberBinding="{Binding CategoryName}"/>
+                        <GridViewColumn Header="Nome Elemento" Width="200" DisplayMemberBinding="{Binding ElementName}"/>
+                    </GridView>
+                </ListView.View>
+            </ListView>
+        </Border>
+
+        <!-- Action Buttons -->
+        <DockPanel Grid.Row="2" Margin="0,16,0,0">
+            <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
+                <Button x:Name="BtnSelect" Content="Seleziona in Revit" Width="120" Height="34" Margin="0,0,8,0"
+                        Background="#334155" Foreground="White" BorderThickness="0" FontWeight="SemiBold" Click="BtnSelect_Click"/>
+                <Button x:Name="BtnIsolate" Content="Isola in Vista" Width="110" Height="34" Margin="0,0,8,0"
+                        Background="#0284C7" Foreground="White" BorderThickness="0" FontWeight="SemiBold" Click="BtnIsolate_Click"/>
+                <Button x:Name="BtnHighlight" Content="Evidenzia Colori" Width="120" Height="34" Margin="0,0,8,0"
+                        Background="#059669" Foreground="White" BorderThickness="0" FontWeight="SemiBold" Click="BtnHighlight_Click"/>
+                <Button x:Name="BtnResetView" Content="Ripristina Vista" Width="110" Height="34"
+                        Background="#475569" Foreground="White" BorderThickness="0" FontWeight="Medium" Click="BtnResetView_Click"/>
+            </StackPanel>
+
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button x:Name="BtnRefresh" Content="Aggiorna" Width="90" Height="34" Margin="0,0,8,0"
+                        Background="#334155" Foreground="White" BorderThickness="0" Click="BtnRefresh_Click"/>
+                <Button x:Name="BtnClose" Content="Chiudi" Width="90" Height="34"
+                        Background="#1E293B" Foreground="#CBD5E1" BorderThickness="1" BorderBrush="#475569" Click="BtnClose_Click"/>
+            </StackPanel>
+        </DockPanel>
+    </Grid>
+</Window>

@@ -33,6 +33,9 @@ namespace RevitDriveConnector.Core.Models
  [JsonPropertyName("lastSyncMachine")]
  public string LastSyncMachine { get; set; } = string.Empty;
 
+ [JsonPropertyName("centralRvtName")]
+ public string CentralRvtName { get; set; } = string.Empty;
+
  [JsonPropertyName("centralFileSha256")]
  public string CentralFileSha256 { get; set; } = string.Empty;
 

@@ -495,6 +495,125 @@ namespace RevitDriveConnector.Core.Services
                             DataJson = JsonSerializer.Serialize(pollSnapshot)
                         };
 
+                    case IpcCommand.PreflightCheck:
+                        var preReq = !string.IsNullOrWhiteSpace(request.PayloadJson)
+                            ? JsonSerializer.Deserialize<PreflightCheckRequest>(request.PayloadJson)
+                            : new PreflightCheckRequest();
+
+                        long minBytes = preReq?.MinRequiredFreeBytes ?? (2L * 1024 * 1024 * 1024);
+                        var (diskOk, freeBytes, totalBytes, driveName) = DiskCleanupService.CheckDiskSpace(DriveService.LocalCachePath, minBytes);
+
+                        var authInfo = await DriveService.ValidateCurrentCredentialAsync(ct);
+                        bool authOk = authInfo != null && authInfo.IsConnected;
+
+                        string? preflightError = null;
+                        if (!authOk)
+                        {
+                            preflightError = "Account Google non autenticato o token revocato. Effettua l'accesso da 'Account Google' nel Ribbon prima di sincronizzare.";
+                        }
+                        else if (!diskOk)
+                        {
+                            preflightError = $"Spazio su disco insufficiente sull'unità {driveName} ({freeBytes / (1024.0 * 1024.0):F0} MB liberi). Richiesti almeno {minBytes / (1024.0 * 1024.0):F0} MB per garantire l'integrità del modello.";
+                        }
+
+                        var preResult = new PreflightCheckResult
+                        {
+                            Success = authOk && diskOk,
+                            IsAuthValid = authOk,
+                            AuthEmail = authInfo?.Email ?? "",
+                            IsDiskSpaceSufficient = diskOk,
+                            AvailableFreeBytes = freeBytes,
+                            RequiredFreeBytes = minBytes,
+                            DriveLetter = driveName,
+                            ErrorMessage = preflightError
+                        };
+                        return new IpcResponse
+                        {
+                            RequestId = request.RequestId,
+                            Success = preResult.Success,
+                            ErrorMessage = preflightError,
+                            DataJson = JsonSerializer.Serialize(preResult)
+                        };
+
+                    case IpcCommand.GetVersionHistory:
+                        var histQuery = JsonSerializer.Deserialize<Dictionary<string, string>>(request.PayloadJson);
+                        string histProj = histQuery != null && histQuery.TryGetValue("ProjectId", out var histPid) ? histPid : "";
+                        var historyResp = await DriveService.GetProjectHistoryAsync(histProj, ct);
+                        return new IpcResponse
+                        {
+                            RequestId = request.RequestId,
+                            Success = true,
+                            DataJson = JsonSerializer.Serialize(historyResp)
+                        };
+
+                    case IpcCommand.RollbackProjectVersion:
+                        var rbReq = JsonSerializer.Deserialize<RollbackRequest>(request.PayloadJson);
+                        if (rbReq == null || string.IsNullOrWhiteSpace(rbReq.ProjectId) || string.IsNullOrWhiteSpace(rbReq.RevisionId))
+                        {
+                            throw new ArgumentException("Parametri non validi per la richiesta di rollback.");
+                        }
+                        var rbResp = await DriveService.RollbackProjectAsync(
+                            rbReq.ProjectId,
+                            rbReq.RevisionId,
+                            rbReq.User,
+                            rbReq.Machine,
+                            rbReq.Reason,
+                            ct,
+                            progressCallback);
+                        return new IpcResponse
+                        {
+                            RequestId = request.RequestId,
+                            Success = rbResp.Success,
+                            DataJson = JsonSerializer.Serialize(rbResp)
+                        };
+
+                    case IpcCommand.CheckCloudLinkUpdates:
+                        var linksQuery = JsonSerializer.Deserialize<Dictionary<string, string>>(request.PayloadJson);
+                        string lProj = linksQuery != null && linksQuery.TryGetValue("ProjectId", out var lnkPid) ? lnkPid : "";
+                        string lLocalDir = linksQuery != null && linksQuery.TryGetValue("LocalProjectDir", out var lld) ? lld : Path.Combine(DriveService.LocalCachePath, lProj);
+                        var linksResp = await DriveService.CheckCloudLinksAsync(lProj, lLocalDir, ct);
+                        return new IpcResponse
+                        {
+                            RequestId = request.RequestId,
+                            Success = true,
+                            DataJson = JsonSerializer.Serialize(linksResp)
+                        };
+
+                    case IpcCommand.DownloadCloudLink:
+                        var dlQuery = JsonSerializer.Deserialize<Dictionary<string, string>>(request.PayloadJson);
+                        string dlProj = dlQuery != null && dlQuery.TryGetValue("ProjectId", out var dlp) ? dlp : "";
+                        string dlFile = dlQuery != null && dlQuery.TryGetValue("FileName", out var dlf) ? dlf : "";
+                        string dlLocalDir = dlQuery != null && dlQuery.TryGetValue("LocalProjectDir", out var dlld) ? dlld : Path.Combine(DriveService.LocalCachePath, dlProj);
+                        bool dlOk = await DriveService.DownloadCloudLinkAsync(dlProj, dlFile, dlLocalDir, ct, progressCallback);
+                        return new IpcResponse
+                        {
+                            RequestId = request.RequestId,
+                            Success = dlOk,
+                            ErrorMessage = dlOk ? null : $"Impossibile scaricare il collegamento '{dlFile}' da Google Drive."
+                        };
+
+                    case IpcCommand.RunDiskCleanup:
+                        var cleanRes = DriveService.PerformIntelligentCleanup();
+                        return new IpcResponse
+                        {
+                            RequestId = request.RequestId,
+                            Success = true,
+                            DataJson = JsonSerializer.Serialize(cleanRes)
+                        };
+
+                    case IpcCommand.ExportDiagnostics:
+                        var expQuery = JsonSerializer.Deserialize<Dictionary<string, string>>(request.PayloadJson);
+                        string expPath = expQuery != null && expQuery.TryGetValue("DestinationZipPath", out var ep)
+                            ? ep
+                            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), $"RevitDriveConnector_Diagnostics_{DateTime.Now:yyyyMMdd_HHmmss}.zip");
+                        var expRes = await DriveService.ExportDiagnosticsZipAsync(expPath, ct);
+                        return new IpcResponse
+                        {
+                            RequestId = request.RequestId,
+                            Success = true,
+                            DataJson = JsonSerializer.Serialize(expRes)
+                        };
+
                     default:
                         return new IpcResponse
                         {

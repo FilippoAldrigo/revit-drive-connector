@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
@@ -84,6 +85,98 @@ namespace RevitDriveConnector.Addin.UI
             if (dlg.ShowDialog() == System.Windows.Forms.DialogResult.OK)
             {
                 TxtCachePath.Text = dlg.SelectedPath;
+            }
+        }
+
+        private async void BtnRunCleanup_Click(object sender, RoutedEventArgs e)
+        {
+            BtnRunCleanup.IsEnabled = false;
+            try
+            {
+                var resp = await Task.Run(() => _ipcClient.SendRequestAsync(new IpcRequest
+                {
+                    Command = IpcCommand.RunDiskCleanup
+                }, timeoutMs: 15000));
+
+                if (resp.Success && !string.IsNullOrEmpty(resp.DataJson))
+                {
+                    var cleanRes = JsonSerializer.Deserialize<DiskCleanupResult>(resp.DataJson);
+                    MessageBox.Show(cleanRes?.Message ?? "Pulizia eseguita.", "Pulizia Cache & Temp", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                else
+                {
+                    MessageBox.Show($"Pulizia non riuscita: {resp.ErrorMessage}", "Pulizia Cache & Temp", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Errore pulizia: {ex.Message}", "Pulizia Cache & Temp", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                BtnRunCleanup.IsEnabled = true;
+            }
+        }
+
+        private async void BtnExportDiagnostics_Click(object sender, RoutedEventArgs e)
+        {
+            var sfd = new Microsoft.Win32.SaveFileDialog
+            {
+                Filter = "Archivio Zip Diagnostica (*.zip)|*.zip",
+                FileName = $"RevitDriveConnector_Diagnostics_{DateTime.Now:yyyyMMdd_HHmm}.zip",
+                Title = "Salva Archivio Diagnostica & Log"
+            };
+
+            if (sfd.ShowDialog() != true) return;
+
+            BtnExportDiagnostics.IsEnabled = false;
+            try
+            {
+                var resp = await Task.Run(() => _ipcClient.SendRequestAsync(new IpcRequest
+                {
+                    Command = IpcCommand.ExportDiagnostics,
+                    PayloadJson = JsonSerializer.Serialize(new Dictionary<string, string>
+                    {
+                        ["DestinationZipPath"] = sfd.FileName
+                    })
+                }, timeoutMs: 30000));
+
+                if (resp.Success && !string.IsNullOrEmpty(resp.DataJson))
+                {
+                    var expRes = JsonSerializer.Deserialize<DiagnosticsExportResponse>(resp.DataJson);
+                    double mb = (expRes?.ZipSizeBytes ?? 0) / (1024.0 * 1024.0);
+                    var askOpen = MessageBox.Show(
+                        $"Diagnostica esportata con successo!\n\n" +
+                        $"• Percorso: {sfd.FileName}\n" +
+                        $"• File inclusi: {expRes?.FileCount ?? 0} (log, config anonimizzato, manifest)\n" +
+                        $"• Dimensione: {mb:F2} MB\n\n" +
+                        "Vuoi aprire la cartella del file generato?",
+                        "Export Diagnostica Completato",
+                        MessageBoxButton.YesNo,
+                        MessageBoxImage.Information);
+
+                    if (askOpen == MessageBoxResult.Yes)
+                    {
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = "explorer.exe",
+                            Arguments = $"/select,\"{sfd.FileName}\"",
+                            UseShellExecute = true
+                        });
+                    }
+                }
+                else
+                {
+                    MessageBox.Show($"Esportazione non riuscita: {resp.ErrorMessage}", "Errore Diagnostica", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Errore esportazione: {ex.Message}", "Errore Diagnostica", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                BtnExportDiagnostics.IsEnabled = true;
             }
         }
 

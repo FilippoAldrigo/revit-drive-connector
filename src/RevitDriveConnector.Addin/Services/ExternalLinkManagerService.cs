@@ -2,8 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
+using RevitDriveConnector.Core.IPC;
+using RevitDriveConnector.Core.Models;
 using RevitDriveConnector.Core.Utils;
 
 namespace RevitDriveConnector.Addin.Services
@@ -305,6 +308,159 @@ namespace RevitDriveConnector.Addin.Services
             catch
             {
                 return string.Empty;
+            }
+        }
+
+        public static async Task<bool> CheckAndPromptCloudLinkUpdatesAsync(Document doc, bool silentIfUpToDate = false)
+        {
+            if (doc == null || !doc.IsWorkshared) return false;
+
+            string centralPath = SynchronizationCoordinator.GetCentralModelPath(doc);
+            if (!SynchronizationCoordinator.IsDriveManagedPath(centralPath) &&
+                !SynchronizationCoordinator.IsDriveManagedPath(doc.PathName))
+            {
+                if (!silentIfUpToDate)
+                {
+                    TaskDialog.Show("Aggiornamento Link", "Il progetto non è gestito da Google Drive Connector.");
+                }
+                return false;
+            }
+
+            string projectId = SynchronizationCoordinator.ExtractProjectName(centralPath);
+            string projectDir = GetProjectBaseDirectory(doc);
+
+            try
+            {
+                var ipc = new NamedPipeIpcClient();
+                var resp = await Task.Run(() => ipc.SendRequestAsync(new IpcRequest
+                {
+                    Command = IpcCommand.CheckCloudLinkUpdates,
+                    PayloadJson = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, string>
+                    {
+                        ["ProjectId"] = projectId,
+                        ["LocalProjectDir"] = projectDir
+                    })
+                }, timeoutMs: 15000));
+
+                if (!resp.Success || string.IsNullOrEmpty(resp.DataJson))
+                {
+                    if (!silentIfUpToDate)
+                    {
+                        TaskDialog.Show("Aggiornamento Link", $"Impossibile verificare i collegamenti: {resp.ErrorMessage}");
+                    }
+                    return false;
+                }
+
+                var checkResult = System.Text.Json.JsonSerializer.Deserialize<CheckCloudLinksResponse>(resp.DataJson);
+                if (checkResult == null || !checkResult.UpdatesAvailable || checkResult.Links.Count == 0)
+                {
+                    if (!silentIfUpToDate)
+                    {
+                        TaskDialog.Show("Aggiornamento Link", "Tutti i collegamenti cloud (Revit, DWG, IFC) sono già aggiornati all'ultima versione disponibile su Google Drive.");
+                    }
+                    return false;
+                }
+
+                var newerLinks = checkResult.Links.Where(l => l.HasNewCloudVersion).ToList();
+                if (newerLinks.Count == 0)
+                {
+                    if (!silentIfUpToDate)
+                    {
+                        TaskDialog.Show("Aggiornamento Link", "Tutti i collegamenti cloud sono aggiornati.");
+                    }
+                    return false;
+                }
+
+                string linkListStr = string.Join("\n", newerLinks.Select(l =>
+                {
+                    double mb = l.CloudSizeBytes / (1024.0 * 1024.0);
+                    return $"• {l.FileName} ({mb:F1} MB – cloud: {l.CloudModifiedTimeUtc.ToLocalTime():yyyy-MM-dd HH:mm})";
+                }));
+
+                var ask = System.Windows.MessageBox.Show(
+                    $"Sono disponibili versioni più recenti su Google Drive per i seguenti collegamenti esterni:\n\n{linkListStr}\n\n" +
+                    "Vuoi scaricarli e ricaricarli automaticamente dentro Revit adesso?",
+                    "Aggiornamenti Collegamenti Google Drive",
+                    System.Windows.MessageBoxButton.YesNo,
+                    System.Windows.MessageBoxImage.Question);
+
+                if (ask != System.Windows.MessageBoxResult.Yes) return false;
+
+                // Download each newer link with progress
+                int downloaded = 0;
+                foreach (var link in newerLinks)
+                {
+                    var dlDlg = new UI.SyncProgressDialog(
+                        $"Download Collegamento: {link.FileName}",
+                        "Scaricamento file aggiornato da Google Drive...",
+                        new IpcRequest
+                        {
+                            Command = IpcCommand.DownloadCloudLink,
+                            PayloadJson = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, string>
+                            {
+                                ["ProjectId"] = projectId,
+                                ["FileName"] = link.FileName,
+                                ["LocalProjectDir"] = projectDir
+                            })
+                        },
+                        timeoutMs: 600000);
+
+                    dlDlg.ShowDialog();
+                    if (dlDlg.Response != null && dlDlg.Response.Success)
+                    {
+                        downloaded++;
+                    }
+                }
+
+                if (downloaded == 0) return false;
+
+                // Reload links in Revit
+                int reloaded = 0;
+                LiveElementLockService.IsSyncOrReloadActive = true;
+                try
+                {
+                    using var trans = new Transaction(doc, "Ricarica Collegamenti Aggiornati");
+                    trans.Start();
+
+                    var projectLinks = GetProjectLinks(doc);
+                    foreach (var link in newerLinks)
+                    {
+                        var matching = projectLinks.FirstOrDefault(pl => string.Equals(pl.Name, link.FileName, StringComparison.OrdinalIgnoreCase));
+                        if (matching != null && matching.ElementId != ElementId.InvalidElementId)
+                        {
+                            var elem = doc.GetElement(matching.ElementId);
+                            if (elem is RevitLinkType rlt)
+                            {
+                                rlt.Reload();
+                                reloaded++;
+                            }
+                            else if (elem is CADLinkType clt)
+                            {
+                                clt.Reload();
+                                reloaded++;
+                            }
+                        }
+                    }
+
+                    trans.Commit();
+                }
+                finally
+                {
+                    LiveElementLockService.IsSyncOrReloadActive = false;
+                }
+
+                TaskDialog.Show("Aggiornamento Link Completato",
+                    $"Aggiornamento completato con successo: {downloaded} file scaricati e {reloaded} collegamenti ricaricati nella sessione di Revit.");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error("ExternalLinkManager", "Errore durante auto-sync dei link", ex);
+                if (!silentIfUpToDate)
+                {
+                    TaskDialog.Show("Errore Aggiornamento Link", ex.Message);
+                }
+                return false;
             }
         }
     }

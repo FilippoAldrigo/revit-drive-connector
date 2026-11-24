@@ -241,6 +241,56 @@ namespace RevitDriveConnector.Addin.Services
 
             try
             {
+                // -1. Pre-flight Check: Google OAuth token validation & disk space check BEFORE any local or cloud work!
+                try
+                {
+                    var preTask = Task.Run(() => IpcClient.SendRequestAsync(new IpcRequest
+                    {
+                        Command = IpcCommand.PreflightCheck,
+                        PayloadJson = JsonSerializer.Serialize(new PreflightCheckRequest
+                        {
+                            ProjectId = projectId,
+                            MinRequiredFreeBytes = 2L * 1024 * 1024 * 1024 // 2 GB minimum free
+                        })
+                    }, timeoutMs: 12000));
+                    preTask.Wait();
+                    var preResp = preTask.Result;
+
+                    if (!preResp.Success || string.IsNullOrEmpty(preResp.DataJson))
+                    {
+                        LastSyncCancelled = true;
+                        if (e.Cancellable) try { e.Cancel(); } catch { }
+                        System.Windows.MessageBox.Show(
+                            $"Controllo preliminare Google Drive fallito:\n{preResp.ErrorMessage ?? "Connessione non disponibile"}\n\n" +
+                            "La sincronizzazione locale è stata bloccata preventivamente per proteggere l'integrità del modello centrale.",
+                            "Pre-flight Drive Sync Fallito",
+                            System.Windows.MessageBoxButton.OK,
+                            System.Windows.MessageBoxImage.Warning);
+                        return;
+                    }
+
+                    var preResult = JsonSerializer.Deserialize<PreflightCheckResult>(preResp.DataJson);
+                    if (preResult == null || !preResult.Success)
+                    {
+                        LastSyncCancelled = true;
+                        if (e.Cancellable) try { e.Cancel(); } catch { }
+                        System.Windows.MessageBox.Show(
+                            $"Pre-flight Check Google Drive non superato:\n\n{preResult?.ErrorMessage ?? "Autenticazione o spazio disco non validi."}\n\n" +
+                            "La sincronizzazione è stata bloccata prima di qualsiasi modifica locale per prevenire incompatibilità di versione.",
+                            "Pre-flight Check Drive Connector",
+                            System.Windows.MessageBoxButton.OK,
+                            System.Windows.MessageBoxImage.Warning);
+                        return;
+                    }
+
+                    // Background intelligent disk cleanup (removes old temp and expired snapshots)
+                    _ = Task.Run(() => IpcClient.SendRequestAsync(new IpcRequest { Command = IpcCommand.RunDiskCleanup }, timeoutMs: 15000));
+                }
+                catch (Exception pEx)
+                {
+                    AppLogger.Warn("SynchronizationCoordinator", "Preflight check warning", pEx);
+                }
+
                 // 0. Check for pending un-uploaded local sync BEFORE doing anything destructive!
                 var pending = CentralSnapshotHelper.ReadPendingUpload(localProjectDir);
                 if (pending != null)

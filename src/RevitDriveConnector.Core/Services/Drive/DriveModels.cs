@@ -109,4 +109,35 @@ namespace RevitDriveConnector.Core.Services.Drive
         [JsonPropertyName("photoLink")]
         public string? PhotoLink { get; set; }
     }
+
+    internal class DriveRevisionListResponse
+    {
+        [JsonPropertyName("revisions")]
+        public List<DriveRevisionItem>? Revisions { get; set; }
+    }
+
+    internal class DriveRevisionItem
+    {
+        [JsonPropertyName("id")]
+        public string Id { get; set; } = string.Empty;
+
+        [JsonPropertyName("mimeType")]
+        public string? MimeType { get; set; }
+
+        [JsonPropertyName("modifiedTime")]
+        public DateTimeOffset? ModifiedTime { get; set; }
+
+        [JsonPropertyName("size")]
+        [JsonNumberHandling(JsonNumberHandling.AllowReadingFromString)]
+        public long? Size { get; set; }
+
+        [JsonPropertyName("md5Checksum")]
+        public string? Md5Checksum { get; set; }
+
+        [JsonPropertyName("keepForever")]
+        public bool? KeepForever { get; set; }
+
+        [JsonPropertyName("lastModifyingUser")]
+        public DriveOwnerItem? LastModifyingUser { get; set; }
+    }
 }

@@ -43,7 +43,7 @@ namespace RevitDriveConnector.Core.Services
             _folders = new DriveFolderResolver(_api, _auth, GetConfig);
             _locks = new CloudLockService(_api, _auth, _folders, GetConfig);
             _collab = new CollaborationStateService(_api, _auth, _folders, _locks, GetConfig);
-            _sync = new CloudProjectSyncService(_api, _auth, _folders, _collab, GetConfig);
+            _sync = new CloudProjectSyncService(_api, _auth, _folders, _locks, _collab, GetConfig);
         }
 
         public GoogleDriveService(
@@ -60,7 +60,7 @@ namespace RevitDriveConnector.Core.Services
             _folders = new DriveFolderResolver(_api, _auth, GetConfig);
             _locks = new CloudLockService(_api, _auth, _folders, GetConfig);
             _collab = new CollaborationStateService(_api, _auth, _folders, _locks, GetConfig);
-            _sync = new CloudProjectSyncService(_api, _auth, _folders, _collab, GetConfig);
+            _sync = new CloudProjectSyncService(_api, _auth, _folders, _locks, _collab, GetConfig);
         }
 
         private AppConfig GetConfig() => _fixedConfig ?? AppConfig.Load();
@@ -164,5 +164,41 @@ namespace RevitDriveConnector.Core.Services
 
         public Task<CollaboratorOperationResult> RemoveCollaboratorAsync(string projectName, string permissionId, CancellationToken ct = default)
             => _sync.RemoveCollaboratorAsync(projectName, permissionId, ct);
+
+        // --- History & Rollback ---
+        public Task<ProjectHistoryResponse> GetProjectHistoryAsync(string projectName, CancellationToken ct = default)
+            => _sync.GetProjectHistoryAsync(projectName, ct);
+
+        public Task<RollbackResponse> RollbackProjectAsync(
+            string projectName,
+            string revisionId,
+            string user,
+            string machine,
+            string reason,
+            CancellationToken ct = default,
+            Action<TransferProgressInfo>? progressCallback = null)
+            => _sync.RollbackProjectAsync(projectName, revisionId, user, machine, reason, ct, progressCallback);
+
+        // --- Cloud External Links ---
+        public Task<CheckCloudLinksResponse> CheckCloudLinksAsync(string projectName, string localProjectDir, CancellationToken ct = default)
+            => _sync.CheckCloudLinksAsync(projectName, localProjectDir, ct);
+
+        public Task<bool> DownloadCloudLinkAsync(
+            string projectName,
+            string fileName,
+            string localProjectDir,
+            CancellationToken ct = default,
+            Action<TransferProgressInfo>? progressCallback = null)
+            => _sync.DownloadCloudLinkAsync(projectName, fileName, localProjectDir, ct, progressCallback);
+
+        // --- Diagnostics & Pre-flight ---
+        public Task<GoogleAccountInfo?> ValidateCurrentCredentialAsync(CancellationToken ct = default)
+            => _auth.ValidateCurrentCredentialAsync(ct);
+
+        public DiskCleanupResult PerformIntelligentCleanup(int maxSnapshotAgeDays = 7)
+            => DiskCleanupService.PerformIntelligentCleanup(LocalCachePath, AppDataDir, maxSnapshotAgeDays);
+
+        public Task<DiagnosticsExportResponse> ExportDiagnosticsZipAsync(string destinationZipPath, CancellationToken ct = default)
+            => DiagnosticsService.ExportDiagnosticsZipAsync(destinationZipPath, GetConfig(), this, ct);
     }
 }

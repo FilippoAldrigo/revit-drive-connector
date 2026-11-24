@@ -98,6 +98,24 @@ namespace RevitDriveConnector.Addin
                     {
                         LiveElementLockService.IsSyncOrReloadActive = false;
                     }
+
+                    // Verifica asincrona di nuove versioni dei collegamenti esterni su Google Drive
+                    var openedDoc = e.Document;
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await Task.Delay(4000);
+                            UiDispatcher?.InvokeAsync(async () =>
+                            {
+                                if (openedDoc != null && openedDoc.IsValidObject)
+                                {
+                                    await ExternalLinkManagerService.CheckAndPromptCloudLinkUpdatesAsync(openedDoc, silentIfUpToDate: true);
+                                }
+                            });
+                        }
+                        catch { }
+                    });
                 }
 
                 // Se è un modello locale gestito da Drive Connector, pianifichiamo un allineamento cloud + ReloadLatest su Idling
@@ -305,6 +323,19 @@ namespace RevitDriveConnector.Addin
             };
             syncPanel.AddItem(btnStatusData);
 
+            var btnHistoryData = new PushButtonData(
+                "btnProjectHistory",
+                Loc.Tr("Btn_History"),
+                assemblyPath,
+                typeof(ProjectHistoryCommand).FullName)
+            {
+                ToolTip = Loc.Tr("Btn_History_Tip"),
+                LargeImage = IconHelper.GetBitmap("icon_cleanup_32.png"),
+                Image = IconHelper.GetBitmap("icon_cleanup_16.png"),
+                AvailabilityClassName = typeof(ActiveWorksharedDocAvailability).FullName
+            };
+            syncPanel.AddItem(btnHistoryData);
+
             // Pannello 3: Prestiti e Modifiche (Stile BIM Collaborate Pro)
             RibbonPanel borrowPanel = application.CreateRibbonPanel(tabName, Loc.Tr("Panel_Borrow"));
 
@@ -334,6 +365,19 @@ namespace RevitDriveConnector.Addin
             };
             borrowPanel.AddItem(btnBorrowCenterData);
 
+            var btnLiveLocksData = new PushButtonData(
+                "btnLiveLocks",
+                Loc.Tr("Btn_LiveEdits"),
+                assemblyPath,
+                typeof(LiveEditsCommand).FullName)
+            {
+                ToolTip = Loc.Tr("Btn_LiveEdits_Tip"),
+                LargeImage = IconHelper.GetBitmap("icon_status_32.png"),
+                Image = IconHelper.GetBitmap("icon_status_16.png"),
+                AvailabilityClassName = typeof(ActiveWorksharedDocAvailability).FullName
+            };
+            borrowPanel.AddItem(btnLiveLocksData);
+
             // Pannello 4: Collegamenti Cloud (Revit, DWG, IFC)
             RibbonPanel linksPanel = application.CreateRibbonPanel(tabName, Loc.Tr("Panel_Links"));
             var btnManageLinksData = new PushButtonData(
@@ -348,6 +392,19 @@ namespace RevitDriveConnector.Addin
                 AvailabilityClassName = typeof(ActiveDocAvailability).FullName
             };
             linksPanel.AddItem(btnManageLinksData);
+
+            var btnCheckLinksData = new PushButtonData(
+                "btnCheckLinks",
+                Loc.Tr("Btn_CheckLinks"),
+                assemblyPath,
+                typeof(CheckLinkUpdatesCommand).FullName)
+            {
+                ToolTip = Loc.Tr("Btn_CheckLinks_Tip"),
+                LargeImage = IconHelper.GetBitmap("icon_links_32.png"),
+                Image = IconHelper.GetBitmap("icon_links_16.png"),
+                AvailabilityClassName = typeof(ActiveDocAvailability).FullName
+            };
+            linksPanel.AddItem(btnCheckLinksData);
 
             // Pannello 5: Configurazione
             RibbonPanel configPanel = application.CreateRibbonPanel(tabName, Loc.Tr("Panel_Config"));

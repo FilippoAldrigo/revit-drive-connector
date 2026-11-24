@@ -96,9 +96,23 @@ namespace RevitDriveConnector.Addin.Commands
                     td.AddCommandLink(TaskDialogCommandLinkId.CommandLink1,
                         Loc.Tr("Status_ForceUnlock"),
                         Loc.Tr("Status_ForceUnlockDesc"));
+
+                    if (uiapp.ActiveUIDocument != null)
+                    {
+                        td.AddCommandLink(TaskDialogCommandLinkId.CommandLink2,
+                            "Chi sta modificando cosa (Lock Live & Visual Locks)",
+                            "Visualizza in tabella tutti gli elementi attualmente in modifica dai colleghi, evidenziali a colori o isolali in vista.");
+                    }
                 }
 
                 var tdResult = td.Show();
+
+                if (tdResult == TaskDialogResult.CommandLink2 && uiapp.ActiveUIDocument != null)
+                {
+                    var liveWin = new RevitDriveConnector.Addin.UI.LiveEditsWindow(uiapp.ActiveUIDocument);
+                    liveWin.ShowDialog();
+                    return Result.Succeeded;
+                }
 
                 if (tdResult == TaskDialogResult.CommandLink1 && !string.IsNullOrEmpty(projectName))
                 {

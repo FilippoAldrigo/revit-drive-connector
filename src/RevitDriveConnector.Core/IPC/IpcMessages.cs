@@ -34,7 +34,14 @@ namespace RevitDriveConnector.Core.IPC
         RemoveCollaborator,
         PublishLiveEdits,
         GetRemoteLiveEdits,
-        PollConnectorState
+        PollConnectorState,
+        PreflightCheck,
+        GetVersionHistory,
+        RollbackProjectVersion,
+        CheckCloudLinkUpdates,
+        DownloadCloudLink,
+        RunDiskCleanup,
+        ExportDiagnostics
     }
 
     public class IpcRequest

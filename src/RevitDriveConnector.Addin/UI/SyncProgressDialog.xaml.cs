@@ -87,19 +87,19 @@ namespace RevitDriveConnector.Addin.UI
                     if (info.TotalBytes > 0)
                     {
                         PrgTransfer.IsIndeterminate = false;
-                        PrgTransfer.Value = info.Percentage;
+                        PrgTransfer.Value = Math.Min(100.0, Math.Max(0.0, info.Percentage));
 
                         double mbDone = info.BytesTransferred / (1024.0 * 1024.0);
                         double mbTotal = info.TotalBytes / (1024.0 * 1024.0);
                         double mbPerSec = info.BytesPerSecond / (1024.0 * 1024.0);
                         string speedStr = mbPerSec >= 0.05 ? $" • {mbPerSec:F1} MB/s" : "";
-                        TxtStats.Text = $"{info.Percentage:F0}% — {mbDone:F1} / {mbTotal:F1} MB (file {info.CompletedFiles}/{info.TotalFiles}){speedStr}";
+                        TxtStats.Text = $"{info.Phase}: {info.CompletedFiles}/{info.TotalFiles} – {mbDone:F1} MB / {mbTotal:F1} MB{speedStr} ({info.Percentage:F0}%)";
                     }
                     else if (info.TotalFiles > 0)
                     {
                         PrgTransfer.IsIndeterminate = false;
                         PrgTransfer.Value = info.Percentage;
-                        TxtStats.Text = $"File {info.CompletedFiles}/{info.TotalFiles}";
+                        TxtStats.Text = $"{info.Phase}: File {info.CompletedFiles}/{info.TotalFiles}";
                     }
                     else
                     {

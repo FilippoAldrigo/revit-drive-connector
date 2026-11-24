@@ -1,0 +1,58 @@
+<Window x:Class="RevitDriveConnector.Addin.UI.ProjectHistoryWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Google Drive Connector - Cronologia Versioni &amp; Rollback" Height="480" Width="720"
+        WindowStartupLocation="CenterScreen"
+        FontFamily="Segoe UI" FontSize="13"
+        Background="#0F172A" Foreground="White">
+
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0" Margin="0,0,0,16">
+            <TextBlock x:Name="TxtTitle" Text="Cronologia Versioni &amp; Rollback Modello Centrale" FontSize="18" FontWeight="Bold" Foreground="#F8FAFC"/>
+            <TextBlock x:Name="TxtSubtitle" Text="Caricamento revisioni del modello centrale da Google Drive..." FontSize="12" Foreground="#94A3B8" Margin="0,4,0,0"/>
+        </StackPanel>
+
+        <!-- Revisions Table -->
+        <Border Grid.Row="1" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="6">
+            <ListView x:Name="LstRevisions" Background="Transparent" BorderThickness="0" Foreground="White"
+                      SelectionMode="Single" SelectionChanged="LstRevisions_SelectionChanged">
+                <ListView.View>
+                    <GridView>
+                        <GridViewColumn Header="Versione" Width="80" DisplayMemberBinding="{Binding Version}"/>
+                        <GridViewColumn Header="Data e Ora (Locale)" Width="160" DisplayMemberBinding="{Binding ModifiedTimeUtc, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}"/>
+                        <GridViewColumn Header="Dimensione" Width="100">
+                            <GridViewColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding SizeBytes, Converter={x:Null}}" Foreground="#38BDF8"/>
+                                </DataTemplate>
+                            </GridViewColumn.CellTemplate>
+                        </GridViewColumn>
+                        <GridViewColumn Header="Autore" Width="170" DisplayMemberBinding="{Binding AuthorName}"/>
+                        <GridViewColumn Header="Note / Descrizione" Width="160" DisplayMemberBinding="{Binding Description}"/>
+                    </GridView>
+                </ListView.View>
+            </ListView>
+        </Border>
+
+        <!-- Bottom Actions -->
+        <DockPanel Grid.Row="2" Margin="0,16,0,0">
+            <Button x:Name="BtnRollback" Content="Ripristina questa Versione (Rollback)" Width="240" Height="34"
+                    Background="#DC2626" Foreground="White" BorderThickness="0" FontWeight="Bold"
+                    IsEnabled="False" Click="BtnRollback_Click" DockPanel.Dock="Left"/>
+
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button x:Name="BtnRefresh" Content="Aggiorna" Width="90" Height="34" Margin="0,0,8,0"
+                        Background="#334155" Foreground="White" BorderThickness="0" Click="BtnRefresh_Click"/>
+                <Button x:Name="BtnClose" Content="Chiudi" Width="90" Height="34"
+                        Background="#1E293B" Foreground="#CBD5E1" BorderThickness="1" BorderBrush="#475569" Click="BtnClose_Click"/>
+            </StackPanel>
+        </DockPanel>
+    </Grid>
+</Window>
